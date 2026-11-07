@@ -9,6 +9,7 @@ use super::browse::WIDE_LIST;
 use super::*;
 use crate::collections::track_id;
 use crate::theme::mix;
+use crate::theme::rad;
 
 impl Onde {
     fn save_collections(&mut self) {
@@ -112,7 +113,7 @@ impl Onde {
             .items_center()
             .gap_2()
             .px_4()
-            .rounded(px(10.))
+            .rounded(rad(10.))
             .bg(palette.rise)
             .border_1()
             .border_color(palette.tide)
@@ -149,7 +150,7 @@ impl Onde {
             .items_center()
             .gap_3()
             .px_2()
-            .rounded(px(16.))
+            .rounded(rad(16.))
             .cursor_pointer()
             .hover(|row| row.bg(pal().rise))
             .child(if heart {
@@ -159,7 +160,7 @@ impl Onde {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(10.))
+                    .rounded(rad(10.))
                     .bg(linear_gradient(
                         160.,
                         linear_color_stop(palette.spark, 0.),
@@ -329,7 +330,9 @@ impl Onde {
                             })
                             .when_some(playlist, |row, index| {
                                 row.child(btn("playlist-fill", "Ajouter des sons").on_click(
-                                    cx.listener(move |this, _, _, cx| this.open_fill_menu(index, cx)),
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.open_fill_menu(index, cx)
+                                    }),
                                 ))
                             })
                             .when_some(playlist, |row, index| {
@@ -374,17 +377,16 @@ impl Onde {
                     range
                         .map(|row| {
                             let index = tracks[row];
-                            let line =
-                                this.track_row(index, None, Some(tracks.clone()), wide, cx);
+                            let line = this.track_row(index, None, Some(tracks.clone()), wide, cx);
                             match playlist {
-                                Some(playlist) => line.child(
-                                    icon_small(("remove", index), "close").on_click(cx.listener(
-                                        move |this, _, _, cx| {
+                                Some(playlist) => {
+                                    line.child(icon_small(("remove", index), "close").on_click(
+                                        cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();
                                             this.remove_from_playlist(playlist, index, cx);
-                                        },
-                                    )),
-                                ),
+                                        }),
+                                    ))
+                                }
                                 None => line,
                             }
                         })
@@ -434,7 +436,8 @@ impl Onde {
             .iter()
             .enumerate()
             .filter(|(_, track)| {
-                let text = format!("{} {} {}", track.title, track.artist, track.album).to_lowercase();
+                let text =
+                    format!("{} {} {}", track.title, track.artist, track.album).to_lowercase();
                 words.iter().all(|word| text.contains(word.as_str()))
             })
             .map(|(index, _)| index)
@@ -488,7 +491,12 @@ impl Onde {
                     } else {
                         format!("{} · {}", track.artist, track.album)
                     };
-                    (index, track.title.clone(), artist, present.contains(&track_id(track)))
+                    (
+                        index,
+                        track.title.clone(),
+                        artist,
+                        present.contains(&track_id(track)),
+                    )
                 })
                 .collect(),
         );
@@ -501,7 +509,7 @@ impl Onde {
             .items_center()
             .gap_2()
             .px_3()
-            .rounded(px(10.))
+            .rounded(rad(10.))
             .bg(palette.rise2)
             .border_1()
             .border_color(palette.tide)
@@ -541,7 +549,7 @@ impl Onde {
                                 .items_center()
                                 .gap_3()
                                 .px_3()
-                                .rounded(px(10.))
+                                .rounded(rad(10.))
                                 .cursor_pointer()
                                 .hover(|row| row.bg(pal().rise2))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -552,9 +560,13 @@ impl Onde {
                                     div()
                                         .flex_none()
                                         .size(px(20.))
-                                        .rounded(px(5.))
+                                        .rounded(rad(5.))
                                         .border_1()
-                                        .border_color(if inside { palette.spark } else { palette.tx3 })
+                                        .border_color(if inside {
+                                            palette.spark
+                                        } else {
+                                            palette.tx3
+                                        })
                                         .when(inside, |tick| tick.bg(palette.spark))
                                         .flex()
                                         .items_center()
@@ -613,7 +625,7 @@ impl Onde {
                     .flex_col()
                     .gap_3()
                     .p_4()
-                    .rounded(px(16.))
+                    .rounded(rad(16.))
                     .bg(palette.rise)
                     .border_1()
                     .border_color(palette.line)
@@ -676,7 +688,7 @@ impl Onde {
                     .justify_between()
                     .gap_2()
                     .px_3()
-                    .rounded(px(10.))
+                    .rounded(rad(10.))
                     .cursor_pointer()
                     .hover(|row| row.bg(pal().rise2))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -713,7 +725,7 @@ impl Onde {
                     .flex_col()
                     .gap_3()
                     .p_4()
-                    .rounded(px(16.))
+                    .rounded(rad(16.))
                     .bg(palette.rise)
                     .border_1()
                     .border_color(palette.line)
@@ -729,16 +741,14 @@ impl Onde {
                     .child(list)
                     .when(naming, |card| card.child(self.naming_field()))
                     .when(!naming, |card| {
-                        card.child(
-                            div().flex().child(
-                                btn("add-new", "Nouvelle playlist").on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.start_naming(cx);
-                                    },
-                                )),
-                            ),
-                        )
+                        card.child(div().flex().child(
+                            btn("add-new", "Nouvelle playlist").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.start_naming(cx);
+                                },
+                            )),
+                        ))
                     }),
             )
     }

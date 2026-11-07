@@ -103,7 +103,8 @@ fn verify(
     version: &str,
     asset: &str,
 ) -> Result<()> {
-    let key = PublicKey::decode(public_key.trim()).map_err(|_| anyhow!("clé publique illisible"))?;
+    let key =
+        PublicKey::decode(public_key.trim()).map_err(|_| anyhow!("clé publique illisible"))?;
     let signature = Signature::decode(signature).map_err(|_| anyhow!("signature illisible"))?;
     key.verify(binary, &signature, false)
         .map_err(|_| anyhow!("signature invalide : mise à jour refusée"))?;
@@ -118,7 +119,9 @@ pub fn install_problem(exe: &Path) -> Option<&'static str> {
     if exe.components().any(|part| part.as_os_str() == "target") {
         return Some("Onde est compilé depuis les sources : mets-le à jour avec git pull.");
     }
-    let probe = exe.parent()?.join(format!(".onde-update-{}", std::process::id()));
+    let probe = exe
+        .parent()?
+        .join(format!(".onde-update-{}", std::process::id()));
     match std::fs::File::create(&probe) {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
@@ -150,7 +153,13 @@ pub fn install(update: &Available) -> Result<PathBuf> {
     let signature = String::from_utf8(download(&update.signature_url, MAX_SIGNATURE)?)
         .context("signature illisible")?;
     let binary = download(&update.binary_url, MAX_BINARY)?;
-    verify(&binary, &signature, PUBLIC_KEY, &update.version, &update.asset)?;
+    verify(
+        &binary,
+        &signature,
+        PUBLIC_KEY,
+        &update.version,
+        &update.asset,
+    )?;
     let staged = exe.with_extension(format!("update-{}", std::process::id()));
     let result = stage(&staged, &binary).and_then(|()| {
         self_replace::self_replace(&staged).context("remplacement d’Onde impossible")
@@ -161,7 +170,8 @@ pub fn install(update: &Available) -> Result<PathBuf> {
 
 fn stage(path: &Path, binary: &[u8]) -> Result<()> {
     let mut file = std::fs::File::create(path).context("écriture de la mise à jour")?;
-    file.write_all(binary).context("écriture de la mise à jour")?;
+    file.write_all(binary)
+        .context("écriture de la mise à jour")?;
     file.sync_all().context("écriture de la mise à jour")?;
     #[cfg(unix)]
     {
@@ -178,7 +188,8 @@ mod tests {
     use serde_json::json;
 
     // A throwaway key, unrelated to the one signing releases.
-    const TEST_KEY: &str = "untrusted comment: test\nRWQyG9GTT69+3xsaN7WzYgYQCZC238Q7LR9i1rzaNsx6Anl/ntwdpqjh";
+    const TEST_KEY: &str =
+        "untrusted comment: test\nRWQyG9GTT69+3xsaN7WzYgYQCZC238Q7LR9i1rzaNsx6Anl/ntwdpqjh";
     const TEST_SIGNATURE: &str = "untrusted comment: signature from rsign secret key
 RUQyG9GTT69+38kdIlakQ+ttbzwxmdEAJm+4A3AlD2g/dxVhSS+pIHk7ZKriAVnGxYuPBo+3RNi5DS2ThWFcGlEU37I3rwAgyQ0=
 trusted comment: onde 9.9.9 onde-linux-x86_64
@@ -204,14 +215,20 @@ W2N8I5+4Zf9QAkoI3vfGL4dogyd8bXt0epjR0gcOpfedS8EFRaWdHoSLukNc5pQ7IeQxgcSr63sDrQRx
 
     #[test]
     fn a_release_needs_a_signed_binary_for_this_system() {
-        let full = release("v1.0.0", &["onde-linux-x86_64", "onde-linux-x86_64.minisig"]);
+        let full = release(
+            "v1.0.0",
+            &["onde-linux-x86_64", "onde-linux-x86_64.minisig"],
+        );
         let found = parse_release(&full, "onde-linux-x86_64", "0.1.1").unwrap();
         assert_eq!(found.version, "1.0.0");
         assert_eq!(found.binary_url, "https://x/onde-linux-x86_64");
         assert_eq!(found.signature_url, "https://x/onde-linux-x86_64.minisig");
         let unsigned = release("v1.0.0", &["onde-linux-x86_64"]);
         assert_eq!(parse_release(&unsigned, "onde-linux-x86_64", "0.1.1"), None);
-        assert_eq!(parse_release(&full, "onde-windows-x86_64.exe", "0.1.1"), None);
+        assert_eq!(
+            parse_release(&full, "onde-windows-x86_64.exe", "0.1.1"),
+            None
+        );
         assert_eq!(parse_release(&full, "onde-linux-x86_64", "1.0.0"), None);
     }
 
@@ -221,14 +238,35 @@ W2N8I5+4Zf9QAkoI3vfGL4dogyd8bXt0epjR0gcOpfedS8EFRaWdHoSLukNc5pQ7IeQxgcSr63sDrQRx
             verify(data, TEST_SIGNATURE, TEST_KEY, version, asset).map_err(|e| e.to_string())
         };
         assert!(check(b"onde test", "9.9.9", "onde-linux-x86_64").is_ok());
-        assert!(check(b"onde piege", "9.9.9", "onde-linux-x86_64").unwrap_err().contains("invalide"));
-        assert!(check(b"onde test", "9.9.8", "onde-linux-x86_64").unwrap_err().contains("autre version"));
-        assert!(check(b"onde test", "9.9.9", "onde-windows-x86_64.exe").unwrap_err().contains("autre version"));
+        assert!(
+            check(b"onde piege", "9.9.9", "onde-linux-x86_64")
+                .unwrap_err()
+                .contains("invalide")
+        );
+        assert!(
+            check(b"onde test", "9.9.8", "onde-linux-x86_64")
+                .unwrap_err()
+                .contains("autre version")
+        );
+        assert!(
+            check(b"onde test", "9.9.9", "onde-windows-x86_64.exe")
+                .unwrap_err()
+                .contains("autre version")
+        );
     }
 
     #[test]
     fn the_real_key_rejects_a_signature_from_another_key() {
-        assert!(verify(b"onde test", TEST_SIGNATURE, PUBLIC_KEY, "9.9.9", "onde-linux-x86_64").is_err());
+        assert!(
+            verify(
+                b"onde test",
+                TEST_SIGNATURE,
+                PUBLIC_KEY,
+                "9.9.9",
+                "onde-linux-x86_64"
+            )
+            .is_err()
+        );
     }
 
     #[test]

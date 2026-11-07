@@ -125,6 +125,9 @@ mod tests {
             added: 0,
         };
         assert_eq!(track_id(&track(Location::File("/m/a".into()))), "file:/m/a");
-        assert_eq!(track_id(&track(Location::Remote("/m/a".into()))), "remote:/m/a");
+        assert_eq!(
+            track_id(&track(Location::Remote("/m/a".into()))),
+            "remote:/m/a"
+        );
     }
 }

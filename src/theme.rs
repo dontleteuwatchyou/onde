@@ -44,6 +44,106 @@ pub fn set_palette(palette: Palette) {
     CURRENT.set(palette);
 }
 
+/// How the window is laid out, beside its colors.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layout {
+    /// Tabs on top, the bar below.
+    Classique,
+    /// A side list of sections, soft and airy.
+    Verre,
+    /// A rail of icons, and what plays takes the whole home.
+    Courant,
+}
+
+pub const LAYOUTS: [(Layout, &str, &str); 3] = [
+    (
+        Layout::Classique,
+        "Classique",
+        "Onglets en haut, lecteur en bas.",
+    ),
+    (
+        Layout::Verre,
+        "Verre",
+        "Barre latérale par sections, tout en douceur.",
+    ),
+    (
+        Layout::Courant,
+        "Courant",
+        "Le morceau en cours en grand, un rail d’icônes.",
+    ),
+];
+
+/// Corner rounding, as a factor of the usual radius.
+pub const ROUNDINGS: [(&str, f32); 3] = [("Carré", 0.35), ("Normal", 1.0), ("Rond", 1.7)];
+/// Size of the spacing unit, in pixels.
+pub const DENSITIES: [(&str, f32); 3] = [("Compacte", 14.0), ("Normale", 16.0), ("Aérée", 18.0)];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Look {
+    pub layout: Layout,
+    pub rounding: f32,
+    pub density: f32,
+    pub round_covers: bool,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self {
+            layout: Layout::Classique,
+            rounding: 1.0,
+            density: 16.0,
+            round_covers: false,
+        }
+    }
+}
+
+impl Layout {
+    pub fn named(name: &str) -> Self {
+        LAYOUTS
+            .iter()
+            .find(|(_, label, _)| label.eq_ignore_ascii_case(name))
+            .map_or(Layout::Classique, |(layout, _, _)| *layout)
+    }
+}
+
+impl Look {
+    /// From what was saved: unknown names keep the defaults.
+    pub fn from_names(
+        layout: Option<&str>,
+        rounding: Option<&str>,
+        density: Option<&str>,
+        round_covers: bool,
+    ) -> Self {
+        let pick = |table: &[(&str, f32); 3], name: Option<&str>, fallback: f32| {
+            name.and_then(|name| table.iter().find(|entry| entry.0 == name))
+                .map_or(fallback, |entry| entry.1)
+        };
+        Self {
+            layout: layout.map_or(Layout::Classique, Layout::named),
+            rounding: pick(&ROUNDINGS, rounding, 1.0),
+            density: pick(&DENSITIES, density, 16.0),
+            round_covers,
+        }
+    }
+}
+
+thread_local! {
+    static LOOK: std::cell::Cell<Look> = std::cell::Cell::new(Look::default());
+}
+
+pub fn look() -> Look {
+    LOOK.get()
+}
+
+pub fn set_look(value: Look) {
+    LOOK.set(value);
+}
+
+/// A corner radius, following the chosen rounding.
+pub fn rad(radius: f32) -> gpui::Pixels {
+    gpui::px(radius * look().rounding)
+}
+
 fn color(hex: u32) -> Rgba {
     Rgba {
         r: ((hex >> 16) & 255) as f32 / 255.0,
@@ -134,9 +234,29 @@ mod tests {
     fn every_theme_stays_readable() {
         for theme in THEMES {
             let palette = Palette::new(theme);
-            assert!(contrast(palette.tx, palette.ink) >= 4.5, "{} texte", theme.0);
-            assert!(contrast(palette.spark, palette.ink) >= 3.0, "{} étincelle", theme.0);
+            assert!(
+                contrast(palette.tx, palette.ink) >= 4.5,
+                "{} texte",
+                theme.0
+            );
+            assert!(
+                contrast(palette.spark, palette.ink) >= 3.0,
+                "{} étincelle",
+                theme.0
+            );
         }
+    }
+
+    #[test]
+    fn the_look_reads_back_its_names() {
+        let saved = Look::from_names(Some("Courant"), Some("Rond"), Some("Aérée"), true);
+        assert_eq!(saved.layout, Layout::Courant);
+        assert_eq!(saved.rounding, 1.7);
+        assert_eq!(saved.density, 18.0);
+        assert_eq!(
+            Look::from_names(Some("??"), None, Some("??"), false),
+            Look::default()
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@ use gpui::Div;
 
 use super::widgets::{btn, chip, h2, mono};
 use super::*;
+use crate::theme::rad;
 use crate::update::{self, Available};
 
 const FIRST_CHECK: Duration = Duration::from_secs(15);
@@ -126,7 +127,7 @@ impl Onde {
             .mb_2()
             .px_4()
             .py_2()
-            .rounded(px(12.))
+            .rounded(rad(12.))
             .bg(palette.rise)
             .flex()
             .items_center()
@@ -151,9 +152,9 @@ impl Onde {
                 )
                 .child(later("update-later", cx)),
             ),
-            UpdateState::Installing(version) => {
-                Some(row.child(format!("Installation d’Onde {version}… La musique s’arrêtera au redémarrage.")))
-            }
+            UpdateState::Installing(version) => Some(row.child(format!(
+                "Installation d’Onde {version}… La musique s’arrêtera au redémarrage."
+            ))),
             UpdateState::Failed(reason) => Some(
                 row.child(div().flex_1().text_color(ERROR).child(reason.clone()))
                     .child(later("update-close", cx)),
