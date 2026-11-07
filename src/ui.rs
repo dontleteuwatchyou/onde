@@ -444,6 +444,7 @@ impl Onde {
                     this.catalog_changed();
                     // Those that had no picture may have one now.
                     this.covers.retain(|_, art| art.is_some());
+                    crate::memory::give_back();
                     cx.notify();
                 }
             });
@@ -497,7 +498,10 @@ impl Onde {
                         }
                         this.source = Some(music);
                         this.queue.replace(tracks);
-                        this.covers.clear();
+                        // Pictures stay on the graphics card until handed back.
+                        for art in this.covers.drain().filter_map(|(_, art)| art) {
+                            cx.drop_image(art.image.clone(), None);
+                        }
                         this.covers_wanted.clear();
                         this.catalog_changed();
                         this.position = 0.0;

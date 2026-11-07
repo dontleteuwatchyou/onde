@@ -14,6 +14,7 @@ mod dsp;
 mod engine;
 mod http_source;
 mod library;
+mod memory;
 mod lyrics;
 mod online_cover;
 mod quality;
@@ -92,6 +93,7 @@ fn run_command(args: &[String]) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    memory::limit_pools();
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
