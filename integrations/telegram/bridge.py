@@ -20,6 +20,10 @@ BOT_PREPARE_SECONDS = 180
 BOT_POLL_SECONDS = 1.5
 # Results the bot prepares at the same time: more would only queue up on its side.
 PARALLEL = 3
+# A busy bot answers a search with nothing, and Telegram keeps that empty answer
+# for a while: failed tracks are tried again by themselves, after a pause.
+AUTO_RETRIES = 2
+RETRY_PAUSE_SECONDS = 45
 PLAYLIST_LIMIT = 500
 USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) Onde'
 
@@ -361,6 +365,7 @@ async def main():
     preparing = {}
     batch = {'name': '', 'total': 0, 'done': 0, 'present': 0, 'failed': [], 'retry': [], 'current': ''}
     runner = None
+    later = []
     transfer = asyncio.Lock()
     synthetic = 0
     commands = asyncio.Queue()
@@ -513,6 +518,7 @@ async def main():
         report()
 
     def stop_queue():
+        later.clear()
         waiting.clear()
         preparing.clear()
         requested.clear()
@@ -523,6 +529,10 @@ async def main():
         report()
 
     def fail(item, reason):
+        if item.get('tries', 0) < AUTO_RETRIES:
+            item['tries'] = item.get('tries', 0) + 1
+            later.append(item)
+            return
         batch['failed'].append(f'{item["label"]} ({reason})')
         batch['retry'].append(item)
 
@@ -570,7 +580,17 @@ async def main():
     async def run_queue():
         latest = await client.get_messages(bot, limit=1)
         floor = latest[0].id if latest else 0
-        while waiting or preparing:
+        while True:
+            if not waiting and not preparing:
+                if not later:
+                    break
+                batch['current'] = (f'Nouvel essai automatique pour {len(later)} morceau(x) '
+                                    f'dans {RETRY_PAUSE_SECONDS} s…')
+                report()
+                await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                waiting.extend(later)
+                later.clear()
+                continue
             while waiting and len(preparing) < PARALLEL:
                 item = waiting.popleft()
                 batch['current'] = item['label']
@@ -778,7 +798,10 @@ async def main():
             if not client or not bot or not items or (runner and not runner.done()):
                 return
             emit(status=f'Nouvel essai pour {len(items)} morceau(x).')
-            enqueue(list(items), f'Réessai · {batch["name"]}')
+            for item in items:
+                item['tries'] = 0
+            name = batch['name'].removeprefix('Réessai · ')
+            enqueue(list(items), f'Réessai · {name}')
         elif action == 'receive':
             message = pending.pop(int(cmd['id']), None)
             if message:
