@@ -26,6 +26,8 @@ Le script télécharge la dernière version, vérifie sa somme de contrôle et i
 
 Lance ensuite la commande `onde`. Si elle est introuvable, ajoute `~/.local/bin` à ton `PATH`.
 
+Onde se met ensuite à jour tout seul : il te prévient quand une version sort, et tu choisis quand l'installer. Tu peux aussi lancer `onde --update`, ou couper la vérification dans **Réglages → Mises à jour**. Les versions sont signées : une version sans signature valide est refusée.
+
 Pour désinstaller Onde (ta musique et tes réglages restent en place) :
 
 ```bash
@@ -163,6 +165,7 @@ Onde n'a ni compte, ni pisteur, ni télémétrie. Seules ces fonctions contacten
 
 | Quand | Ce qui part | Vers |
 |---|---|---|
+| Mises à jour, sauf si coupées | Une demande de la dernière version, au lancement puis toutes les 6 h | GitHub |
 | Paroles | Titre, artiste, album, durée | lrclib.net |
 | Recherche et téléchargement | Ce que tu cherches | La source choisie |
 | Navidrome | Tes identifiants et tes demandes | Ton serveur |

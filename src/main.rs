@@ -19,6 +19,7 @@ mod sources;
 mod telegram;
 mod theme;
 mod ui;
+mod update;
 mod visuals;
 
 use std::path::PathBuf;
@@ -35,7 +36,9 @@ const USAGE: &str = "Utilisation :
   onde DOSSIER                          ouvre un dossier de musique
   onde navidrome                        ouvre le serveur configuré
   onde navidrome-login ADRESSE UTILISATEUR
-  onde navidrome-logout";
+  onde navidrome-logout
+  onde --update                         installe la dernière version
+  onde --version";
 
 fn navidrome_login(url: &str, user: &str) -> Result<()> {
     let password = rpassword::prompt_password("Mot de passe : ")?;
@@ -61,8 +64,24 @@ fn navidrome_logout() -> Result<()> {
     Ok(())
 }
 
+fn self_update() -> Result<()> {
+    let Some(found) = update::check()? else {
+        println!("Onde {} est à jour.", update::CURRENT);
+        return Ok(());
+    };
+    println!("Installation d'Onde {}…", found.version);
+    update::install(&found)?;
+    println!("Onde {} est installé. Il prendra effet au prochain lancement.", found.version);
+    Ok(())
+}
+
 fn run_command(args: &[String]) -> Result<()> {
     match args {
+        [command] if command == "--update" => self_update(),
+        [command] if command == "--version" => {
+            println!("onde {}", update::CURRENT);
+            Ok(())
+        }
         [_, url, user] if args[0] == "navidrome-login" => navidrome_login(url, user),
         [command] if command == "navidrome-logout" => navidrome_logout(),
         _ => bail!("{USAGE}"),
@@ -77,7 +96,7 @@ fn main() -> ExitCode {
     let startup = match args.first().map(String::as_str) {
         None => Startup::Empty,
         Some("navidrome") => Startup::Navidrome,
-        Some("navidrome-login" | "navidrome-logout" | "--help" | "-h") => {
+        Some("navidrome-login" | "navidrome-logout" | "--help" | "-h" | "--update" | "--version") => {
             return match run_command(&args) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {

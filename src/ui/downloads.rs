@@ -95,6 +95,13 @@ impl Downloads {
 }
 
 impl Onde {
+    pub(super) fn stop_telegram(&mut self) {
+        if let Some(bridge) = &mut self.downloads.telegram {
+            bridge.stop();
+        }
+        self.downloads.telegram = None;
+    }
+
     pub(super) fn poll_telegram(&mut self, cx: &mut Context<Self>) {
         let count = self
             .downloads

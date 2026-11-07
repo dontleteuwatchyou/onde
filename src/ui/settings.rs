@@ -466,6 +466,7 @@ impl Onde {
             )
             .child(div().flex().flex_col().gap_3().child(h2("Thème")).child(themes))
             .child(self.render_discord(cx))
+            .child(self.render_updates(cx))
             .child(
                 div()
                     .flex()
