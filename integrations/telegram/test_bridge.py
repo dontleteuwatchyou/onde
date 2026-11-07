@@ -21,7 +21,8 @@ from types import SimpleNamespace as N
 class Password(Exception): pass
 class Flood(Exception): pass
 errors = N(SessionPasswordNeededError=Password, FloodWaitError=Flood)
-functions = N()
+functions = N(messages=N(GetInlineBotResultsRequest=lambda **kw: ('results', kw),
+    SendInlineBotResultRequest=lambda **kw: ('post', kw)))
 events = N(NewMessage=lambda **kw: None, MessageEdited=lambda **kw: None)
 class TelegramClient:
  def __init__(self, *a, **kw): self.live=False
@@ -32,14 +33,27 @@ class TelegramClient:
  def add_event_handler(self, handler, event): self.handler=handler
  async def get_entity(self, name): return N(id=7, bot=True, username=name)
  async def send_message(self, bot, text, **kw):
+  if not text.startswith('https://'): raise AssertionError('search must not post')
   async def reply():
    await asyncio.sleep(.05)
-   for mid, sender, reply_id in [(10, 8, 42), (11, 7, 42), (12, 7, None)]:
+   for mid, sender, reply_id in [(50, 8, 42), (51, 7, 42), (52, 7, None)]:
     message=N(id=mid, sender_id=sender, chat_id=sender, out=False,
        reply_to_msg_id=reply_id, audio=True, file=N(size=32), document=N(attributes=[]), raw_text='')
     await self.handler(N(message=message))
   asyncio.create_task(reply())
   return N(id=42)
+ async def __call__(self, request):
+  if request[0] == 'results':
+   return N(query_id=1, results=[N(id='a', title='Titre', description='Artiste')])
+  self.posted = 0
+  return N()
+ async def get_messages(self, bot, limit):
+  old = N(id=40, out=False, via_bot_id=None, sender_id=7, audio=True)
+  if not hasattr(self, 'posted'): return [old]
+  self.posted += 1
+  # Placeholder first: the bot edits the audio in later.
+  return [N(id=60, out=True, via_bot_id=7, sender_id=1, audio=self.posted > 2,
+      file=N(size=32), document=N(attributes=[]), raw_text=''), old]
  async def download_file(self, document, file, part_size_kb, file_size, progress_callback):
   file.write(b'fLaC' + bytes(28))
   await progress_callback(32,32)
@@ -78,13 +92,12 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('Artiste exemple', bridge.result_details(result))
         self.assertIn('non précisés', bridge.result_details(types.SimpleNamespace()))
 
-    def test_selected_result_receives_new_audio_without_reply(self):
+    def test_receives_new_audio_from_the_bot_only(self):
         message = types.SimpleNamespace(id=50, sender_id=7, chat_id=7, out=False, reply_to_msg_id=None)
-        self.assertTrue(bridge.should_receive(message, 7, 42, True))
-        self.assertFalse(bridge.should_receive(message, 7, 42, False))
-        self.assertFalse(bridge.should_receive(message, 7, 51, True))
+        self.assertTrue(bridge.should_receive(message, 7, 42))
+        self.assertFalse(bridge.should_receive(message, 7, 51))
         message.sender_id = 8
-        self.assertFalse(bridge.should_receive(message, 7, 42, True))
+        self.assertFalse(bridge.should_receive(message, 7, 42))
 
     def test_names_use_tags_and_strip_paths(self):
         import io
@@ -106,6 +119,52 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(bridge.audio_extension(b'fLaC' + bytes(28)), '.flac')
         with self.assertRaises(ValueError):
             bridge.audio_extension(b'<html>not music</html>')
+
+    def test_new_audio_keeps_posts_via_the_bot_and_its_own_audio(self):
+        def message(id, out=True, via=7, audio=True, sender=1):
+            return types.SimpleNamespace(id=id, out=out, via_bot_id=via, audio=audio, sender_id=sender)
+        posted = message(11)
+        answer = message(12, out=False, via=None, sender=7)
+        messages = [message(9), posted, answer, message(13, via=None),
+                    message(14, audio=False), message(15, via=8),
+                    message(16, out=False, via=None, sender=8)]
+        self.assertEqual(bridge.new_audio(messages, 7, 10), [posted, answer])
+
+    def test_search_posts_nothing_and_click_waits_for_the_edited_audio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'telethon.py').write_text(FAKE)
+            music = root / 'music'
+            music.mkdir()
+            env = dict(os.environ, PYTHONPATH=str(root), ONDE_TELEGRAM_API_ID='1',
+                       ONDE_TELEGRAM_API_HASH='test')
+            with subprocess.Popen([sys.executable, '-u', str(HERE / 'bridge.py'), str(root / 'session')],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, env=env) as proc:
+                def send(**cmd):
+                    proc.stdin.write(json.dumps(cmd) + '\n')
+                    proc.stdin.flush()
+                def until(predicate):
+                    for line in proc.stdout:
+                        event = json.loads(line)
+                        if predicate(event):
+                            return event
+                    self.fail('event missing')
+                send(action='connect')
+                until(lambda e: e.get('connected'))
+                until(lambda e: e.get('busy') is False)
+                send(action='send', text='une recherche', folder=str(music))
+                event = until(lambda e: e.get('buttons'))
+                self.assertEqual(event['buttons'][0]['label'], 'Titre')
+                send(action='click', key=event['buttons'][0]['key'])
+                until(lambda e: 'prépare' in e.get('status', ''))
+                self.assertFalse(list(music.iterdir()))
+                event = until(lambda e: 'file' in e)
+                self.assertTrue(Path(event['file']).exists())
+                # The older audio (40) below the floor must stay untouched.
+                self.assertEqual(len(list(music.iterdir())), 1)
+                send(action='quit')
+                self.assertEqual(proc.wait(timeout=5), 0)
 
     def test_explicit_lifecycle_and_reception(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -138,13 +197,11 @@ class BridgeTests(unittest.TestCase):
                 until(lambda e: e.get('connected'))
                 until(lambda e: e.get('busy') is False)
                 self.assertFalse(list(music.iterdir()))
-                send(action='send', text='test autorisé', folder=str(music))
+                send(action='send', text='https://test.example/autorise', folder=str(music))
                 event = until(lambda e: 'file' in e)
                 path = Path(event['file'])
                 self.assertEqual(path.read_bytes(), b'fLaC' + bytes(28))
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-                self.assertEqual(len(list(music.iterdir())), 1)
-                send(action='receive', id=12)
                 until(lambda e: 'file' in e)
                 self.assertEqual(len(list(music.iterdir())), 2)
                 send(action='cancel')

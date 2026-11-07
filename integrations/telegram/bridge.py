@@ -10,6 +10,9 @@ import fcntl
 
 logging.disable(logging.CRITICAL)
 MAX_SIZE = 512 * 1024 * 1024
+# The bot edits the audio into the posted result: seconds to a minute, sometimes more.
+BOT_PREPARE_SECONDS = 180
+BOT_POLL_SECONDS = 1.5
 
 
 def emit(**event):
@@ -59,10 +62,16 @@ def correlated(message, bot_id, request_id):
             and not message.out and message.reply_to_msg_id == request_id)
 
 
-def should_receive(message, bot_id, request_id, selected):
+def should_receive(message, bot_id, request_id):
     return (message.sender_id == bot_id and message.chat_id == bot_id
-            and not message.out and
-            (message.reply_to_msg_id == request_id or (selected and message.id > request_id)))
+            and not message.out and message.id > request_id)
+
+
+def new_audio(messages, bot_id, floor_id):
+    # A chosen inline result is posted from the user's own account, "via" the bot,
+    # which then edits the audio into it. It may also answer with a plain audio message.
+    return [m for m in messages if m.audio and m.id > floor_id
+            and (m.via_bot_id == bot_id if m.out else m.sender_id == bot_id)]
 
 
 def readable_name(audio, message):
@@ -148,8 +157,12 @@ async def main():
     received = set()
     early = []
     sending = False
-    auto_download = False
-    auto_global = False
+    requested = set()
+    claimed = set()
+    watcher = None
+    watch_floor = 0
+    watch_until = 0
+    expected = 0
     commands = asyncio.Queue()
     loop = asyncio.get_running_loop()
     # A daemon reader allows EOF/quit to end without a blocked executor thread.
@@ -163,6 +176,11 @@ async def main():
                     continue
                 loop.call_soon_threadsafe(commands.put_nowait, value)
         finally:
+            # stdin closes when Onde exits, even if killed. Never outlive it: a stuck
+            # shutdown would keep the session lock and block the next launch.
+            watchdog = threading.Timer(5, os._exit, [0])
+            watchdog.daemon = True
+            watchdog.start()
             loop.call_soon_threadsafe(commands.put_nowait, {'action': 'quit'})
     threading.Thread(target=read, daemon=True).start()
 
@@ -174,7 +192,7 @@ async def main():
             if not api_hash:
                 raise ValueError()
         except (KeyError, ValueError):
-            emit(status='Configurer ONDE_TELEGRAM_API_ID et ONDE_TELEGRAM_API_HASH avant de lancer Onde.')
+            emit(status=f'Identifiants API absents : renseigner ONDE_TELEGRAM_API_ID et ONDE_TELEGRAM_API_HASH dans {root / "api.env"}.')
             return
         for path in root.glob('account.session*'):
             if path.is_symlink() or path.stat().st_uid != os.getuid():
@@ -248,14 +266,53 @@ async def main():
             else:
                 raise ValueError('collisions')
             received.add(message.id)
-            emit(file=str(Path(folder) / target), status='Fichier reçu.')
+            emit(file=str(Path(folder) / target), status=f'Fichier reçu : {target}')
         finally:
             if temporary:
                 os.unlink(temporary, dir_fd=descriptor)
             os.close(descriptor)
 
+    def show_results(results):
+        inline_results.clear()
+        requested.clear()
+        choices = []
+        for index, result in enumerate(results.results[:50]):
+            key = f'inline:{results.query_id}:{index}'
+            label = getattr(result, 'title', None) or getattr(result, 'description', None) or f'Résultat {index + 1}'
+            inline_results[key] = (results.query_id, result.id, label[:200])
+            choices.append({'key': key, 'label': label[:200], 'details': result_details(result)})
+        emit(buttons=choices, status='Cliquer sur une musique pour la télécharger.' if choices else 'Aucun résultat.')
+
+    def stop_watching():
+        nonlocal expected
+        expected = 0
+        if watcher:
+            watcher.cancel()
+
+    async def watch_for_audio():
+        # Polling rather than edit events: history is what Telegram guarantees.
+        nonlocal expected, watch_until
+        while time.monotonic() < watch_until:
+            await asyncio.sleep(BOT_POLL_SECONDS)
+            try:
+                recent = await client.get_messages(bot, limit=20)
+            except Exception:
+                continue
+            for message in reversed(new_audio(recent, bot.id, watch_floor)):
+                if message.id not in claimed:
+                    claimed.add(message.id)
+                    pending[message.id] = message
+                    expected = max(0, expected - 1)
+                    await commands.put({'action': 'receive', 'id': message.id})
+                    if not expected:
+                        # Albums arrive as several files: give the others a moment.
+                        watch_until = time.monotonic() + 30
+        if expected:
+            expected = 0
+            emit(status='Le bot n’a pas envoyé le fichier après 3 minutes : cliquer à nouveau pour réessayer.')
+            requested.clear()
+
     async def incoming(event):
-        nonlocal auto_global
         message = event.message
         if sending and bot and message.sender_id == bot.id and len(early) < 100:
             early.append(event)
@@ -270,11 +327,6 @@ async def main():
             for choice in choices:
                 menus[choice['key']] = (message, choice['button'])
             emit(buttons=[{'key': c['key'], 'label': c['label']} for c in choices])
-            if auto_global:
-                global_choice = next((c for c in choices if 'global search' in c['label'].casefold()), None)
-                if global_choice:
-                    auto_global = False
-                    await commands.put({'action': 'click', 'key': global_choice['key']})
         elif message.id in [entry[0].id for entry in menus.values()]:
             menus.clear()
             emit(buttons=[])
@@ -282,15 +334,15 @@ async def main():
             if len(pending) < 100 and message.id not in received:
                 pending[message.id] = message
                 # Feed downloads through the command loop to keep transfers serialized.
-                if should_receive(message, bot.id, request, auto_download):
+                if should_receive(message, bot.id, request):
                     await commands.put({'action': 'receive', 'id': message.id})
-                else:
-                    emit(candidate=message.id, status='Audio sans référence à la requête : confirmer sa réception.')
-        elif message.raw_text:
+        elif message.raw_text and not message.media:
+            # Picture cards would hide the download progress or its failure.
             emit(status='Bot : ' + message.raw_text[:600])
 
     async def perform(cmd):
-        nonlocal bot, request, expires, folder, client, sending, auto_global, auto_download
+        nonlocal bot, request, expires, folder, client, sending
+        nonlocal watcher, watch_floor, watch_until, expected
         action = cmd.get('action')
         if action == 'connect':
             if client is None:
@@ -314,15 +366,19 @@ async def main():
             bot = await client.get_entity('DeezLoad2Bot')
             if not bot.bot or bot.username.lower() != 'deezload2bot':
                 raise ValueError('bot')
-            pending.clear()
             inline_results.clear()
-            emit(clear_candidates=True, buttons=[])
             menus.clear()
-            # NewMessage handler awaits request assignment through this single event loop.
             request = None
+            if not text.startswith(('https://', 'http://')):
+                # Answers in under a second and posts nothing, unlike sending the text
+                # to the bot, whose menu can take over a minute to come back.
+                emit(buttons=[], status='Recherche…')
+                show_results(await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
+                    bot=bot, peer=bot, query=text, offset='')), 30))
+                return
+            emit(buttons=[])
+            # NewMessage handler awaits request assignment through this single event loop.
             early.clear()
-            auto_download = text.startswith(("https://", "http://"))
-            auto_global = True
             sending = True
             try:
                 sent = await client.send_message(bot, text, parse_mode=None, link_preview=False)
@@ -333,21 +389,23 @@ async def main():
             for event in early:
                 await incoming(event)
             early.clear()
-            emit(status='Envoyé. Choisir un résultat autorise sa réception automatique dans le dossier musical.')
+            emit(status='Lien envoyé au bot : réception automatique dès qu’il répond.')
         elif action == 'click':
             key = cmd.get('key')
-            if key in inline_results and request and time.monotonic() < expires:
-                query_id, result_id = inline_results.pop(key)
-                inline_results.clear()
-                emit(buttons=[])
-                expires = time.monotonic() + 300
-                auto_download = True
-                try:
-                    await client(functions.messages.SendInlineBotResultRequest(
-                        peer=bot, query_id=query_id, id=result_id))
-                except BaseException:
-                    auto_download = False
-                    raise
+            if key in inline_results:
+                if key in requested:
+                    return
+                query_id, result_id, label = inline_results[key]
+                latest = await client.get_messages(bot, limit=1)
+                await client(functions.messages.SendInlineBotResultRequest(
+                    peer=bot, query_id=query_id, id=result_id))
+                requested.add(key)
+                emit(status=f'Le bot prépare « {label} »… Réception automatique dès qu’il est prêt.')
+                expected += 1
+                watch_until = time.monotonic() + BOT_PREPARE_SECONDS
+                if not watcher or watcher.done():
+                    watch_floor = latest[0].id if latest else 0
+                    watcher = asyncio.create_task(watch_for_audio())
                 return
             choice = menus.get(key)
             if not choice or not request or time.monotonic() >= expires:
@@ -359,16 +417,8 @@ async def main():
             expires = time.monotonic() + 300
             kind = getattr(button, 'type', button)
             if type(kind).__name__ == 'InlineButtonTypeSwitchInline':
-                results = await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
-                    bot=bot, peer=bot, query=kind.query, offset='')), 30)
-                inline_results.clear()
-                choices = []
-                for index, result in enumerate(results.results[:50]):
-                    key = f'inline:{results.query_id}:{index}'
-                    inline_results[key] = (results.query_id, result.id)
-                    label = getattr(result, 'title', None) or getattr(result, 'description', None) or f'Résultat {index + 1}'
-                    choices.append({'key': key, 'label': label[:200], 'details': result_details(result)})
-                emit(buttons=choices, status='Choisir un résultat pour le transmettre au bot.' if choices else 'Aucun résultat inline pour ce choix.')
+                show_results(await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
+                    bot=bot, peer=bot, query=kind.query, offset='')), 30))
                 return
             if type(kind).__name__ in ('KeyboardButtonCallback', 'InlineButtonTypeCallback'):
                 answer = await asyncio.wait_for(client(functions.messages.GetBotCallbackAnswerRequest(
@@ -380,12 +430,12 @@ async def main():
                 emit(status='Bot : ' + answer.message[:600])
         elif action == 'receive':
             message = pending.pop(int(cmd['id']), None)
-            if message and request and time.monotonic() < expires:
+            if message:
                 await asyncio.wait_for(download(message), 600)
         elif action == 'cancel':
             request = None
             pending.clear()
-            emit(clear_candidates=True, status='Réception arrêtée.')
+            emit(status='Réception arrêtée.')
         elif action == 'logout':
             request = None
             if not client or not client.is_connected():
@@ -412,12 +462,12 @@ async def main():
             emit(status='Opération annulée.', qr=[])
         except errors.FloodWaitError as error:
             emit(status=f'Limite Telegram : attendre {error.seconds} secondes, puis réessayer explicitement.')
-        except Exception:
+        except Exception as error:
             if cmd.get('action') == 'connect' and client:
                 await client.disconnect()
                 client = None
                 emit(connected=False)
-            emit(status='Échec Telegram : vérifier réseau, configuration, session et dossier. Aucun nouvel essai automatique.', qr=[])
+            emit(status=f'Échec Telegram ({type(error).__name__}) : vérifier réseau, configuration, session et dossier. Aucun nouvel essai automatique.', qr=[])
         finally:
             emit(busy=False)
 
@@ -428,19 +478,19 @@ async def main():
             except asyncio.TimeoutError:
                 if request and time.monotonic() > expires:
                     request = None
-                    pending.clear()
                     menus.clear()
-                    emit(clear_candidates=True, buttons=[], status='Fenêtre de réception expirée. Relancer explicitement si nécessaire.')
+                    emit(buttons=[], status='Fenêtre de réception expirée. Relancer explicitement si nécessaire.')
                 continue
             action = cmd.get('action')
             if action in ('quit', 'disconnect', 'delete', 'cancel'):
                 if operation and not operation.done():
                     operation.cancel()
                     await operation
+                stop_watching()
                 request = None
                 pending.clear()
                 menus.clear()
-                emit(clear_candidates=True, buttons=[])
+                emit(buttons=[])
                 if action == 'cancel':
                     emit(status='Réception arrêtée.')
                     continue
@@ -458,7 +508,7 @@ async def main():
                     break
             elif operation and not operation.done():
                 # Requeue automatic files rather than lose album replies during transfer.
-                if action in ('receive', 'click'):
+                if action in ('receive', 'click', 'send'):
                     await asyncio.sleep(.1)
                     await commands.put(cmd)
                 else:
@@ -467,6 +517,7 @@ async def main():
                 emit(busy=True)
                 operation = asyncio.create_task(guarded(cmd))
     finally:
+        stop_watching()
         if operation and not operation.done():
             operation.cancel()
             await operation

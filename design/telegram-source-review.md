@@ -4,9 +4,10 @@
 
 Linux, Python 3.10+ et un compte Telegram déjà ouvert sur un appareil sont
 nécessaires. L’intégration se trouve dans l’écran Téléchargements d’Onde.
-Elle est désactivée au lancement : aucune connexion automatique, même si une
-session existe déjà. Les dépendances Python sont facultatives et ne sont pas
-installées par Onde.
+Le pont Python démarre et s’arrête avec l’application. Sans session, il reste
+inactif jusqu’à l’acceptation des permissions. Si une session existe déjà, Onde se
+reconnecte au lancement, sans envoyer de message. Les dépendances Python sont
+facultatives et ne sont pas installées par Onde.
 
 Depuis la racine du dépôt :
 
@@ -22,6 +23,9 @@ cargo run
 Obtenir les identifiants de l’application sur
 [my.telegram.org](https://my.telegram.org), conformément aux
 [prérequis API](https://core.telegram.org/api/obtaining_api_id).
+Sans ces variables, Onde lit `~/.config/onde/telegram/api.env` (lignes
+`ONDE_TELEGRAM_API_ID=…` et `ONDE_TELEGRAM_API_HASH=…`). Sans
+`ONDE_TELEGRAM_PYTHON`, Onde utilise `.venv-telegram` s’il existe, sinon `python3`.
 Ces identifiants ne sont ni le code de connexion ni le mot de passe 2FA.
 Ne pas les publier ni les mettre dans le dépôt. Ils sont hérités par le processus
 Python via l’environnement ; ils ne sont pas dans ses arguments.
@@ -29,15 +33,15 @@ Python via l’environnement ; ils ne sont pas dans ses arguments.
 1. Configurer le dossier musical dans Onde.
 2. Lire les permissions dans Téléchargements. Refuser laisse la source inactive.
 3. Accepter la connexion puis scanner le QR avec Telegram > Paramètres > Appareils.
-4. Saisir une recherche ou un lien dans le champ de recherche de l’onglet Telegram, puis cliquer
-   **Autoriser le bot : envoyer et récupérer**. Dans l’onglet Telegram, Entrée déclenche la même action après connexion.
+4. Saisir une recherche ou un lien dans le champ de recherche de l’onglet Telegram, puis valider avec Entrée.
+   Une recherche passe par une requête inline : réponse immédiate, rien n’est posté dans le chat.
+   Cliquer sur une musique la télécharge dans le dossier musical dès que le bot l’a préparée.
    Sélectionner l’onglet ne transmet rien ; les autres sources restent indépendantes. Envoyer `/start` reste une action
    explicite si le bot le demande.
 5. Consulter progression, réponse textuelle, erreurs et fichiers reçus dans le
    panneau Telegram. La bibliothèque est rafraîchie après réception.
-6. Les audios répondant explicitement au message envoyé sont récupérés pendant
-   cinq minutes. Les audios sans cette référence demandent un clic individuel.
-   Les résultats ambigus affichent leur identifiant Telegram, pas un titre vérifié.
+6. Tous les audios envoyés par le bot après la recherche sont récupérés
+   automatiquement pendant cinq minutes.
 7. Arrêter la réception annule le transfert et ferme la fenêtre de réception.
    Déconnecter ferme la connexion et conserve la session locale. Révoquer invalide
    la session auprès de Telegram et nécessite une connexion active. Supprimer la
@@ -166,10 +170,11 @@ les informations disponibles sans déduire un album à partir du titre.
 
 ## Réception automatique après sélection
 
-Choisir un résultat inline ou envoyer explicitement un lien musical autorise
-la réception automatique des nouveaux audios de ce bot pendant cinq minutes,
-même sans référence de réponse. Les anciens messages et autres conversations
-restent exclus. Les transferts utilisent le dossier musical configuré au moment
+Un résultat inline choisi est posté par le compte de l’utilisateur « via » le bot,
+qui y ajoute ensuite l’audio en modifiant le message, de quelques secondes à plus
+d’une minute. Onde surveille donc le chat jusqu’à trois minutes après le clic.
+Envoyer un lien active la réception des nouveaux audios du bot pendant cinq minutes.
+Les anciens messages et autres conversations restent exclus. Les transferts utilisent le dossier musical configuré au moment
 de l’envoi, puis rafraîchissent la bibliothèque. Arrêter la réception termine
 cette autorisation. En l’absence de référence fournie par le bot, cette association
 est temporelle : éviter des demandes concurrentes au même bot dans un autre client.

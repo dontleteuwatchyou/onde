@@ -121,6 +121,7 @@ struct Song {
     bit_rate: Option<u32>,
     bit_depth: Option<u32>,
     sampling_rate: Option<u32>,
+    created: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -217,6 +218,15 @@ fn to_track(song: Song) -> Track {
             song.sampling_rate,
         ),
         extension: song.suffix,
+        // « 2024-05-01T10:20:30.000Z » keeps its order as a plain number.
+        added: song
+            .created
+            .chars()
+            .filter(char::is_ascii_digit)
+            .take(14)
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0),
     }
 }
 

@@ -1,19 +1,32 @@
-//! The window: track list and playback bar.
+//! The window: navigation between the screens, and what they all share.
 
+mod browse;
+mod covers;
 mod downloads;
+mod player;
+mod playlists;
 mod quality;
+mod settings;
 mod setup;
+mod widgets;
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, FocusHandle, HighlightStyle, Hsla, Image, ImageFormat, KeyBinding,
-    MouseButton, MouseDownEvent, ObjectFit, PathPromptOptions, SharedString, StyledText, Window,
-    actions, canvas, div, img, prelude::*, px, relative, rgb, uniform_list,
+    AnyElement, App, Bounds, BoxShadow, Context, FocusHandle, FontWeight, HighlightStyle,
+    KeyBinding, MouseButton, MouseDownEvent, PathPromptOptions, Pixels, SharedString, StyledText,
+    Window, actions, canvas, div, point, prelude::*, px, relative, uniform_list,
 };
 
-use crate::analysis::{Analyzer, BANDS};
+use crate::analysis::Analyzer;
+use crate::catalog::{Catalog, TrackSort, album_key};
+use crate::collections::Collections;
+use crate::cover_host::{Hosting, Links};
+use crate::discord::Presence;
 use crate::config;
 use crate::engine::Engine;
 use crate::library::{Location, format_time};
@@ -23,25 +36,21 @@ use crate::queue::{Previous, Queue};
 use crate::sources::MusicSource;
 use crate::sources::local::LocalFolder;
 use crate::sources::subsonic::Subsonic;
-use crate::visuals;
+use crate::theme::{Palette, alpha, pal, set_palette};
+use crate::visuals::{self, VISUALS, Visual, VisualState, WaterLine};
+use browse::LibraryView;
+use covers::CoverArt;
+use widgets::{
+    ERROR, GOOD, btn, chip, display, ghost, h2, icon, icon_button, icon_small, mono, primary, tag,
+};
 
-const BACKGROUND: u32 = 0x12141a;
-const SURFACE: u32 = 0x1b1e26;
-const HOVER: u32 = 0x262a34;
-const SELECTED: u32 = 0x1f3a3d;
-const TEXT: u32 = 0xeceef2;
-const MUTED: u32 = 0x8b90a0;
-const ACCENT: u32 = 0x3fd0c0;
-const ERROR: u32 = 0xff8a80;
-
-/// Below this width the bar keeps only the track name and the buttons.
+/// Below this width the navigation moves to the bottom and the bar slims down.
 const COMPACT_WIDTH: f32 = 760.0;
 
 const VOLUME_STEP: f32 = 0.1;
 const SEEK_STEP: f64 = 5.0;
+const RECENT_ALBUMS: usize = 12;
 
-const COVER_SIZE: f32 = 44.;
-const FORMAT_WIDTH: f32 = 150.;
 const AUDIO_GAP: Duration = Duration::from_millis(400);
 const SLOW_TICK: Duration = Duration::from_millis(200);
 /// Fast enough for the visuals and the word highlight to look continuous.
@@ -61,11 +70,18 @@ actions!(
         SeekBackward,
         ToggleLyrics,
         ToggleVisuals,
+        ToggleQueue,
+        ToggleFullscreen,
+        LikeCurrent,
+        ToggleShuffle,
+        Leave,
         VolumeUp,
         VolumeDown,
         OpenNavidrome,
         ToggleDownloads,
+        StartSearch,
         SubmitSearch,
+        LeaveSearch,
         EraseSearch,
         PasteSearch
     ]
@@ -79,6 +95,35 @@ enum LyricsState {
     Failed(String),
 }
 
+#[derive(Clone, PartialEq)]
+enum Screen {
+    Home,
+    Library,
+    Album(String),
+    Artist(String),
+    Playlists,
+    Liked,
+    Playlist(usize),
+    Downloads,
+    Sources,
+    Settings,
+}
+
+fn random_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(1, |age| age.as_nanos() as u64)
+}
+
+const NAVIGATION: [(&str, &str, Screen); 6] = [
+    ("Accueil", "home", Screen::Home),
+    ("Bibliothèque", "lib", Screen::Library),
+    ("Playlists", "listplus", Screen::Playlists),
+    ("Téléchargements", "dl", Screen::Downloads),
+    ("Sources", "server", Screen::Sources),
+    ("Réglages", "sliders", Screen::Settings),
+];
+
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("space", TogglePlay, Some("Lecteur")),
@@ -89,11 +134,17 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("l", ToggleLyrics, Some("Lecteur")),
         KeyBinding::new("n", OpenNavidrome, Some("Lecteur")),
         KeyBinding::new("v", ToggleVisuals, Some("Lecteur")),
+        KeyBinding::new("q", ToggleQueue, Some("Lecteur")),
+        KeyBinding::new("f", ToggleFullscreen, Some("Lecteur")),
+        KeyBinding::new("h", LikeCurrent, Some("Lecteur")),
+        KeyBinding::new("s", ToggleShuffle, Some("Lecteur")),
+        KeyBinding::new("escape", Leave, Some("Lecteur")),
         KeyBinding::new("up", VolumeUp, Some("Lecteur")),
         KeyBinding::new("down", VolumeDown, Some("Lecteur")),
         KeyBinding::new("d", ToggleDownloads, Some("Lecteur")),
-        // While the download screen is open, typing goes to its search field.
-        KeyBinding::new("escape", ToggleDownloads, Some("Recherche")),
+        KeyBinding::new("/", StartSearch, Some("Lecteur")),
+        // While a search field is active, typing goes to it.
+        KeyBinding::new("escape", LeaveSearch, Some("Recherche")),
         KeyBinding::new("enter", SubmitSearch, Some("Recherche")),
         KeyBinding::new("backspace", EraseSearch, Some("Recherche")),
         KeyBinding::new("ctrl-v", PasteSearch, Some("Recherche")),
@@ -113,6 +164,7 @@ pub struct Onde {
     quality_report: Option<crate::quality::Report>,
     quality_error: Option<String>,
     queue: Queue,
+    catalog: Catalog,
     source: Option<Arc<dyn MusicSource>>,
     engine: Option<Engine>,
     message: Option<SharedString>,
@@ -121,17 +173,53 @@ pub struct Onde {
     lyrics: LyricsState,
     /// Bumped on each track change, so a slow lookup can't show the wrong lyrics.
     lyrics_request: u64,
+    /// In full screen: the lyrics rather than the title.
     show_lyrics: bool,
-    analyzer: Option<Analyzer>,
+    analyzer: Rc<RefCell<Analyzer>>,
+    visual: Visual,
+    visual_state: Rc<RefCell<VisualState>>,
+    water_line: Rc<RefCell<WaterLine>>,
+    volume_bounds: Rc<Cell<Bounds<Pixels>>>,
     show_visuals: bool,
+    fullscreen: bool,
+    show_queue: bool,
+    screen: Screen,
+    library_view: LibraryView,
+    library_query: String,
+    library_typing: bool,
+    track_sort: TrackSort,
+    visible_tracks: Vec<usize>,
+    visible_albums: Vec<usize>,
+    visible_artists: Vec<usize>,
+    /// Being dragged to, as a fraction of the track.
+    seek_drag: Option<f32>,
+    volume_drag: bool,
+    muted_volume: Option<f32>,
+    recent: Vec<String>,
+    collections: Collections,
+    track_index: HashMap<String, usize>,
+    /// The track being added to a playlist, while that menu is open.
+    adding_to: Option<usize>,
+    /// The name being typed for a new playlist.
+    naming: Option<String>,
+    /// The delete button has been pressed once.
+    deleting: bool,
+    presence: Option<Presence>,
+    cover_links: Arc<Links>,
+    host_covers: bool,
+    hosting: Option<Hosting>,
+    discord_id_saved: bool,
+    /// What Discord was last told: the track and when it started.
+    presence_sent: Option<(String, i64)>,
     last_tick: Instant,
     last_audio: Instant,
     downloads: downloads::Downloads,
     /// First launch, before a music folder was chosen.
     ask_folder: bool,
-    cover: Option<Arc<Image>>,
-    /// Which track `cover` belongs to, or is being fetched for.
-    cover_for: Option<Location>,
+    /// By album. `None`: being fetched, or there is no picture.
+    covers: HashMap<String, Option<Arc<CoverArt>>>,
+    covers_wanted: Vec<String>,
+    covers_running: usize,
     focus: FocusHandle,
 }
 
@@ -154,7 +242,11 @@ impl Onde {
             }
         })
         .detach();
-        let analyzer = engine.as_ref().map(|e| Analyzer::new(e.sample_rate()));
+        let settings = config::load();
+        if let Some(theme) = &settings.theme {
+            set_palette(Palette::named(theme));
+        }
+        let rate = engine.as_ref().map_or(44_100, Engine::sample_rate);
         let mut this = Self {
             quality_open: false,
             quality_busy: false,
@@ -162,6 +254,7 @@ impl Onde {
             quality_report: None,
             quality_error: None,
             queue: Queue::default(),
+            catalog: Catalog::default(),
             source: None,
             engine,
             message,
@@ -170,18 +263,52 @@ impl Onde {
             lyrics: LyricsState::Idle,
             lyrics_request: 0,
             show_lyrics: false,
-            analyzer,
+            analyzer: Rc::new(RefCell::new(Analyzer::new(rate))),
+            visual: settings
+                .visual
+                .as_deref()
+                .and_then(Visual::from_name)
+                .unwrap_or(Visual::Maree),
+            visual_state: Rc::default(),
+            water_line: Rc::default(),
+            volume_bounds: Rc::default(),
             show_visuals: true,
+            fullscreen: false,
+            show_queue: false,
+            screen: Screen::Home,
+            library_view: LibraryView::Tracks,
+            library_query: String::new(),
+            library_typing: false,
+            track_sort: TrackSort::Artist,
+            visible_tracks: Vec::new(),
+            visible_albums: Vec::new(),
+            visible_artists: Vec::new(),
+            seek_drag: None,
+            volume_drag: false,
+            muted_volume: None,
+            recent: settings.recent_albums,
+            collections: settings.collections,
+            track_index: HashMap::new(),
+            adding_to: None,
+            naming: None,
+            deleting: false,
+            presence: None,
+            cover_links: Arc::new(Links::load()),
+            host_covers: settings.host_covers,
+            hosting: None,
+            discord_id_saved: false,
+            presence_sent: None,
             last_tick: Instant::now(),
             last_audio: Instant::now(),
             downloads: downloads::Downloads::new(),
             ask_folder: false,
-            cover: None,
-            cover_for: None,
+            covers: HashMap::new(),
+            covers_wanted: Vec::new(),
+            covers_running: 0,
             focus,
         };
         match startup {
-            Startup::Empty => match config::load().music_folder {
+            Startup::Empty => match settings.music_folder {
                 Some(folder) if folder.is_dir() => {
                     this.open_source(Arc::new(LocalFolder(folder)), cx);
                 }
@@ -190,12 +317,37 @@ impl Onde {
             Startup::Folder(folder) => this.open_source(Arc::new(LocalFolder(folder)), cx),
             Startup::Navidrome => this.open_navidrome(cx),
         }
+        this.restart_presence();
+        this.queue.shuffle = config::load().shuffle;
         this
+    }
+
+    fn go(&mut self, screen: Screen, cx: &mut Context<Self>) {
+        self.screen = screen;
+        self.library_typing = false;
+        self.quality_open = false;
+        self.fullscreen = false;
+        self.adding_to = None;
+        self.naming = None;
+        self.deleting = false;
+        cx.notify();
+    }
+
+    /// Plays from the whole library, whatever was playing before.
+    fn start(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.queue.follow(index, Vec::new(), random_seed());
+        self.play(index, cx);
+    }
+
+    /// Plays from a list: what follows is the rest of that list.
+    fn start_in(&mut self, index: usize, order: Vec<usize>, cx: &mut Context<Self>) {
+        self.queue.follow(index, order, random_seed());
+        self.play(index, cx);
     }
 
     fn tick(&mut self, cx: &mut Context<Self>) -> Duration {
         self.poll_telegram(cx);
-        if self.downloads.open && self.downloads.needs_updates() {
+        if self.screen == Screen::Downloads && self.downloads.needs_updates() {
             cx.notify();
         }
         let Some(engine) = &self.engine else {
@@ -216,25 +368,26 @@ impl Onde {
             self.position = position;
             cx.notify();
         }
-        let visuals_moving = self.update_visuals(cx);
-        let lyrics_moving = self.show_lyrics && matches!(self.lyrics, LyricsState::Ready(..));
+        self.update_presence();
+        let moving = self.update_visuals(cx);
         let playing =
             self.queue.current.is_some() && self.engine.as_ref().is_some_and(|e| !e.is_paused());
-        if visuals_moving || (lyrics_moving && playing) {
+        if moving || playing {
             FAST_TICK
         } else {
             SLOW_TICK
         }
     }
 
-    /// Returns whether the visuals need another frame soon.
+    /// Returns whether what follows the sound needs another frame soon.
     fn update_visuals(&mut self, cx: &mut Context<Self>) -> bool {
         let dt = self.last_tick.elapsed().as_secs_f32();
         self.last_tick = Instant::now();
-        let (Some(engine), Some(analyzer)) = (&self.engine, &mut self.analyzer) else {
+        let Some(engine) = &self.engine else {
             return false;
         };
-        let was_quiet = analyzer.is_quiet();
+        let mut analyzer = self.analyzer.borrow_mut();
+        let was_still = analyzer.is_quiet() && analyzer.activity() < 0.01;
         let mut received = false;
         engine.drain_tap(|sample| {
             received = true;
@@ -248,45 +401,16 @@ impl Onde {
         let hearing = self.queue.current.is_some()
             && !engine.is_paused()
             && self.last_audio.elapsed() < AUDIO_GAP;
-        if self.show_visuals && hearing {
+        if hearing {
             analyzer.update(dt);
         } else {
             analyzer.release(dt);
         }
-        let moving = !was_quiet || !analyzer.is_quiet();
-        if self.show_visuals && moving {
+        let moving = !was_still || !(analyzer.is_quiet() && analyzer.activity() < 0.01);
+        if moving {
             cx.notify();
         }
-        self.show_visuals && (moving || hearing)
-    }
-
-    fn load_cover(&mut self, cx: &mut Context<Self>) {
-        let (track, music) = (self.queue.current_track().cloned(), self.source.clone());
-        let wanted = track.as_ref().map(|track| track.location.clone());
-        if wanted == self.cover_for {
-            return;
-        }
-        self.cover = None;
-        self.cover_for = wanted.clone();
-        let (Some(track), Some(music)) = (track, music) else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let bytes = cx
-                .background_spawn(async move { music.cover(&track) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if this.cover_for != wanted {
-                    return;
-                }
-                this.cover = bytes.ok().flatten().and_then(|bytes| {
-                    let format = image_format(&bytes)?;
-                    Some(Arc::new(Image::from_bytes(format, bytes)))
-                });
-                cx.notify();
-            });
-        })
-        .detach();
+        moving || hearing
     }
 
     /// Lists the source again without touching what is playing.
@@ -305,6 +429,9 @@ impl Onde {
             let _ = this.update(cx, |this, cx| {
                 if let Ok(tracks) = listed {
                     this.queue.refresh(tracks);
+                    this.catalog_changed();
+                    // Those that had no picture may have one now.
+                    this.covers.retain(|_, art| art.is_some());
                     cx.notify();
                 }
             });
@@ -358,9 +485,11 @@ impl Onde {
                         }
                         this.source = Some(music);
                         this.queue.replace(tracks);
+                        this.covers.clear();
+                        this.covers_wanted.clear();
+                        this.catalog_changed();
                         this.position = 0.0;
                         this.load_lyrics(cx);
-                        this.load_cover(cx);
                     }
                     // What was open stays open and playing.
                     Err(error) => {
@@ -424,9 +553,23 @@ impl Onde {
         self.queue.current = Some(index);
         self.position = 0.0;
         self.message = None;
+        self.remember_album();
         self.load_lyrics(cx);
-        self.load_cover(cx);
         cx.notify();
+    }
+
+    fn remember_album(&mut self) {
+        let Some(key) = self.queue.current_track().map(album_key) else {
+            return;
+        };
+        if self.recent.first() == Some(&key) {
+            return;
+        }
+        self.recent.retain(|known| *known != key);
+        self.recent.insert(0, key);
+        self.recent.truncate(RECENT_ALBUMS);
+        let recent = self.recent.clone();
+        self.save_settings(|settings| settings.recent_albums = recent);
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -436,19 +579,25 @@ impl Onde {
         self.queue.current = None;
         self.position = 0.0;
         self.load_lyrics(cx);
-        self.load_cover(cx);
         cx.notify();
     }
 
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
         let Some(engine) = &self.engine else { return };
         if self.queue.current.is_none() {
-            if let Some(first) = self.queue.next_index() {
-                self.play(first, cx);
+            if let Some(first) = self.queue.first_index(random_seed()) {
+                self.start(first, cx);
             }
             return;
         }
         engine.set_paused(!engine.is_paused());
+        cx.notify();
+    }
+
+    fn toggle_shuffle(&mut self, cx: &mut Context<Self>) {
+        self.queue.toggle_shuffle(random_seed());
+        let on = self.queue.shuffle;
+        self.save_settings(|settings| settings.shuffle = on);
         cx.notify();
     }
 
@@ -490,8 +639,56 @@ impl Onde {
         cx.notify();
     }
 
+    /// Opens the visuals; when they're already showing, moves on to the next one.
+    fn visual_key(&mut self, cx: &mut Context<Self>) {
+        if self.fullscreen && !self.show_lyrics {
+            let now = VISUALS.iter().position(|v| *v == self.visual).unwrap_or(0);
+            self.set_visual(VISUALS[(now + 1) % VISUALS.len()], cx);
+        } else {
+            self.fullscreen = true;
+            self.show_lyrics = false;
+            cx.notify();
+        }
+    }
+
     fn toggle_lyrics(&mut self, cx: &mut Context<Self>) {
-        self.show_lyrics = !self.show_lyrics;
+        if self.fullscreen && self.show_lyrics {
+            self.show_lyrics = false;
+        } else {
+            self.fullscreen = true;
+            self.show_lyrics = true;
+        }
+        cx.notify();
+    }
+
+    fn toggle_fullscreen(&mut self, cx: &mut Context<Self>) {
+        self.fullscreen = !self.fullscreen;
+        cx.notify();
+    }
+
+    fn toggle_queue(&mut self, cx: &mut Context<Self>) {
+        self.show_queue = !self.show_queue;
+        cx.notify();
+    }
+
+    fn leave(&mut self, cx: &mut Context<Self>) {
+        if self.adding_to.is_some() {
+            self.adding_to = None;
+        } else if self.fullscreen {
+            self.fullscreen = false;
+        } else if self.show_queue {
+            self.show_queue = false;
+        } else if self.quality_open {
+            self.quality_open = false;
+        }
+        cx.notify();
+    }
+
+    fn start_search(&mut self, cx: &mut Context<Self>) {
+        self.screen = Screen::Library;
+        self.library_typing = true;
+        self.quality_open = false;
+        self.fullscreen = false;
         cx.notify();
     }
 
@@ -502,431 +699,141 @@ impl Onde {
         cx.notify();
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+    fn nav_active(&self, target: &Screen) -> bool {
+        match (&self.screen, target) {
+            (Screen::Album(_) | Screen::Artist(_), Screen::Library) => true,
+            (Screen::Liked | Screen::Playlist(_), Screen::Playlists) => true,
+            (current, target) => current == target,
+        }
+    }
+
+    fn render_top(&mut self, compact: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = pal();
+        let back = match self.screen {
+            Screen::Album(_) | Screen::Artist(_) => Some(Screen::Library),
+            Screen::Liked | Screen::Playlist(_) => Some(Screen::Playlists),
+            _ => None,
+        };
+        let logo = div()
+            .relative()
+            .size(px(28.))
+            .flex_none()
+            .child(icon("logo-top", 28., palette.spark).absolute())
+            .child(icon("logo-bottom", 28., palette.tx).absolute());
+        let mut nav = div()
             .flex()
             .items_center()
-            .justify_between()
-            .px_5()
-            .py_3()
-            .child(div().text_xl().text_color(rgb(ACCENT)).child("Onde"))
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        button("visuals", "Visuels")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_visuals(cx))),
-                    )
-                    .child(
-                        button("downloads", "Télécharger")
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_downloads(cx))),
-                    )
-                    .child(
-                        button("navidrome", "Navidrome")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_navidrome(cx))),
-                    )
-                    .child(
-                        button("open", "Ouvrir un dossier")
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_folder(cx))),
-                    ),
-            )
-    }
-
-    fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.queue.tracks.is_empty() {
-            let text = if self.scanning {
-                "Lecture du dossier…"
-            } else {
-                "Ouvre un dossier de musique ou ton serveur Navidrome pour commencer."
-            };
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(MUTED))
-                .child(text)
-                .into_any_element();
-        }
-        uniform_list(
-            "tracks",
-            self.queue.tracks.len(),
-            cx.processor(|this, range: std::ops::Range<usize>, window, cx| {
-                let compact = window.viewport_size().width < px(COMPACT_WIDTH);
-                range
-                    .map(|index| {
-                        let track = &this.queue.tracks[index];
-                        let is_current = this.queue.current == Some(index);
-                        div()
-                            .id(index)
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .h(px(44.))
-                            .px_5()
-                            .cursor_pointer()
-                            .when(is_current, |row| row.bg(rgb(SELECTED)))
-                            .when(!is_current, |row| row.hover(|row| row.bg(rgb(HOVER))))
-                            .on_click(cx.listener(move |this, _, _, cx| this.play(index, cx)))
-                            .child(
-                                div()
-                                    .id(("verify", index))
-                                    .px_2()
-                                    .text_sm()
-                                    .child("Vérifier")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.inspect_track(index, cx);
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_color(rgb(if is_current { ACCENT } else { TEXT }))
-                                    .child(track.title.clone()),
-                            )
-                            .child(
-                                div()
-                                    .w(relative(0.32))
-                                    .truncate()
-                                    .text_sm()
-                                    .text_color(rgb(MUTED))
-                                    .child(track.artist.clone()),
-                            )
-                            .when(!compact, |row| {
-                                row.child(
-                                    div()
-                                        .w(px(FORMAT_WIDTH))
-                                        .truncate()
-                                        .text_sm()
-                                        .text_color(rgb(MUTED))
-                                        .child(track.format.clone()),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .w(px(56.))
-                                    .flex()
-                                    .justify_end()
-                                    .text_sm()
-                                    .text_color(rgb(MUTED))
-                                    .child(format_time(track.duration)),
-                            )
-                    })
-                    .collect()
-            }),
-        )
-        .flex_1()
-        .w_full()
-        .into_any_element()
-    }
-
-    fn render_visuals(&self) -> impl IntoElement {
-        let (levels, bass) = self
-            .analyzer
-            .as_ref()
-            .map_or(([0.0; BANDS], 0.0), |a| (*a.levels(), a.bass()));
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, _| visuals::paint(bounds, &levels, bass, window),
-        )
-        .absolute()
-        .size_full()
-    }
-
-    fn render_lyrics(&self, cx: &mut Context<Self>) -> AnyElement {
-        let notice = |text: String| {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .px_5()
-                .text_color(rgb(MUTED))
-                .child(text)
-                .into_any_element()
-        };
-        match &self.lyrics {
-            LyricsState::Idle => notice("Lance un morceau pour voir ses paroles.".into()),
-            LyricsState::Loading => notice("Recherche des paroles…".into()),
-            LyricsState::Missing => notice("Aucune parole trouvée pour ce morceau.".into()),
-            LyricsState::Failed(error) => notice(format!("Paroles indisponibles : {error}")),
-            LyricsState::Ready(Lyrics::Instrumental, _) => notice("Morceau instrumental.".into()),
-            LyricsState::Ready(Lyrics::Plain(lines), origin) => div()
-                .id("plain-lyrics")
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scroll()
-                .px_8()
-                .py_4()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .text_lg()
-                .children(lines.iter().map(|line| div().child(line.clone())))
-                .child(origin_label(*origin))
-                .into_any_element(),
-            LyricsState::Ready(Lyrics::Synced(lines), origin) => {
-                self.render_synced(lines, *origin, cx)
+            .gap_1()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden();
+        if !compact {
+            for (index, (label, _, target)) in NAVIGATION.into_iter().enumerate() {
+                let on = self.nav_active(&target);
+                nav = nav.child(
+                    div()
+                        .id(("nav", index))
+                        .h(px(36.))
+                        .flex()
+                        .items_center()
+                        .px_3()
+                        .rounded(px(10.))
+                        .cursor_pointer()
+                        .font_weight(FontWeight::MEDIUM)
+                        .when(on, |item| {
+                            item.bg(palette.rise2).shadow(vec![BoxShadow {
+                                color: alpha(palette.tide, 0.6).into(),
+                                offset: point(px(0.), px(0.)),
+                                blur_radius: px(14.),
+                                spread_radius: px(0.),
+                            }])
+                        })
+                        .when(!on, |item| item.hover(|item| item.bg(pal().rise)))
+                        .on_click(cx.listener(move |this, _, _, cx| this.go(target.clone(), cx)))
+                        .child(label),
+                );
             }
         }
-    }
-
-    fn render_synced(&self, lines: &[Line], origin: Origin, cx: &mut Context<Self>) -> AnyElement {
-        let ms = (self.position * 1000.0) as u64;
-        let active = active_line(lines, ms);
-        let center = active.unwrap_or(0);
-        let first = center.saturating_sub(LINES_BEFORE);
-        let last = (center + LINES_AFTER).min(lines.len() - 1);
         div()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
+            .h(px(56.))
+            .flex_none()
             .flex()
-            .flex_col()
-            .gap_4()
-            .px_8()
-            .py_6()
-            .text_3xl()
-            .children((first..=last).map(|index| {
-                let line = &lines[index];
-                let start = line.start_ms as f64 / 1000.0;
-                div()
-                    .id(index)
-                    .cursor_pointer()
-                    .text_color(text_alpha(line_alpha(line, index, active)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.seek_to(start, cx)))
-                    .child(line_text(line, ms, active == Some(index)))
-            }))
-            .child(origin_label(origin))
-            .into_any_element()
-    }
-
-    fn render_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let track = self.queue.current_track();
-        let duration = track.map_or(0.0, |t| t.duration);
-        let progress = if duration > 0.0 {
-            (self.position / duration).clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
-        let paused =
-            self.engine.as_ref().is_none_or(Engine::is_paused) || self.queue.current.is_none();
-        let volume = self.engine.as_ref().map_or(0.0, Engine::volume);
-        let width = window.viewport_size().width;
-        let compact = width < px(COMPACT_WIDTH);
-
-        div()
-            .flex()
-            .flex_col()
-            .bg(rgb(SURFACE))
-            .child(
-                // The bar spans the window, so the click's x gives the fraction directly.
-                div()
-                    .id("progress")
-                    .w_full()
-                    .h(px(6.))
-                    .bg(rgb(HOVER))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            let fraction = f64::from(event.position.x / width);
-                            this.seek_to(fraction * duration, cx);
-                        }),
-                    )
-                    .child(div().h_full().w(relative(progress)).bg(rgb(ACCENT))),
-            )
+            .items_center()
+            .gap_6()
+            .px_6()
+            .when_some(back, |top, back| {
+                top.child(
+                    icon_button("back", "back", false)
+                        .on_click(cx.listener(move |this, _, _, cx| this.go(back.clone(), cx))),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_4()
-                    .px_5()
-                    .py_3()
-                    .when(track.is_some(), |bar| {
-                        bar.child(
-                            div()
-                                .size(px(COVER_SIZE))
-                                .flex_none()
-                                .rounded_md()
-                                .overflow_hidden()
-                                .bg(rgb(HOVER))
-                                .when_some(self.cover.clone(), |frame, cover| {
-                                    frame.child(img(cover).size_full().object_fit(ObjectFit::Cover))
-                                }),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().text_color(rgb(TEXT)).child(
-                                track.map_or(SharedString::from("Aucune lecture"), |t| {
-                                    t.title.clone().into()
-                                }),
-                            ))
-                            .child(div().truncate().text_sm().text_color(rgb(MUTED)).child(
-                                track.map_or(SharedString::default(), |t| {
-                                    if t.format.is_empty() {
-                                        t.artist.clone().into()
-                                    } else {
-                                        format!("{} · {}", t.artist, t.format).into()
-                                    }
-                                }),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                button("previous", "Préc.")
-                                    .on_click(cx.listener(|this, _, _, cx| this.previous(cx))),
-                            )
-                            .child(
-                                button("play", if paused { "Lecture" } else { "Pause" })
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx))),
-                            )
-                            .child(
-                                button("next", "Suiv.")
-                                    .on_click(cx.listener(|this, _, _, cx| this.next(cx))),
-                            )
-                            .child(
-                                button(
-                                    "lyrics",
-                                    if self.show_lyrics { "Liste" } else { "Paroles" },
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_lyrics(cx))),
-                            ),
-                    )
-                    .when(!compact, |bar| {
-                        bar.child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .gap_2()
-                                .text_sm()
-                                .text_color(rgb(MUTED))
-                                .child(format!(
-                                    "{} / {}",
-                                    format_time(self.position),
-                                    format_time(duration)
-                                ))
-                                .child(button("volume-down", "−").on_click(cx.listener(
-                                    |this, _, _, cx| this.change_volume(-VOLUME_STEP, cx),
-                                )))
-                                .child(format!("{:.0} %", volume * 100.0))
-                                .child(button("volume-up", "+").on_click(cx.listener(
-                                    |this, _, _, cx| this.change_volume(VOLUME_STEP, cx),
-                                ))),
-                        )
-                    }),
+                    .gap_2()
+                    .child(logo)
+                    .child(display("onde", 22.)),
             )
+            .child(nav)
     }
-}
 
-fn text_alpha(alpha: f32) -> Hsla {
-    let mut color: Hsla = rgb(TEXT).into();
-    color.a = alpha;
-    color
-}
-
-fn line_alpha(line: &Line, index: usize, active: Option<usize>) -> f32 {
-    match active {
-        Some(current) if index < current => SUNG_ALPHA,
-        // With word timing the words light up on top of this base.
-        Some(current) if index == current && line.words.is_empty() => 1.0,
-        _ => UPCOMING_ALPHA,
+    fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = pal();
+        let mut tabs = div().h(px(56.)).flex_none().flex().bg(palette.deep);
+        for (index, (label, name, target)) in NAVIGATION.into_iter().enumerate() {
+            let on = self.nav_active(&target);
+            let tint = if on { palette.spark } else { palette.tx2 };
+            tabs = tabs.child(
+                div()
+                    .id(("tab", index))
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_size(px(10.))
+                    .text_color(tint)
+                    .on_click(cx.listener(move |this, _, _, cx| this.go(target.clone(), cx)))
+                    .child(icon(name, 20., tint))
+                    .child(div().truncate().child(label)),
+            );
+        }
+        tabs
     }
-}
-
-/// The active line lights up word by word when the lyrics have word timing.
-fn line_text(line: &Line, ms: u64, is_active: bool) -> StyledText {
-    if line.text.trim().is_empty() {
-        return StyledText::new("…");
-    }
-    let text = StyledText::new(line.text.clone());
-    if !is_active || line.words.is_empty() {
-        return text;
-    }
-    // GPUI blends a highlight over the text color, so the alpha is just the fill.
-    text.with_highlights(line_fills(line, ms).into_iter().map(|(range, fill)| {
-        let style = HighlightStyle {
-            color: Some(text_alpha(fill)),
-            ..Default::default()
-        };
-        (range, style)
-    }))
-}
-
-fn origin_label(origin: Origin) -> impl IntoElement {
-    div()
-        .pt_2()
-        .text_xs()
-        .text_color(rgb(MUTED))
-        .child(format!("Source : {}", origin.label()))
-}
-
-fn image_format(bytes: &[u8]) -> Option<ImageFormat> {
-    match bytes {
-        [0xff, 0xd8, ..] => Some(ImageFormat::Jpeg),
-        [0x89, b'P', b'N', b'G', ..] => Some(ImageFormat::Png),
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'E',
-            b'B',
-            b'P',
-            ..,
-        ] => Some(ImageFormat::Webp),
-        [b'G', b'I', b'F', ..] => Some(ImageFormat::Gif),
-        _ => None,
-    }
-}
-
-fn button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .px_3()
-        .py_1()
-        .rounded_md()
-        .bg(rgb(HOVER))
-        .text_sm()
-        .text_color(rgb(TEXT))
-        .cursor_pointer()
-        .hover(|button| button.bg(rgb(SELECTED)))
-        .child(label)
 }
 
 impl Render for Onde {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let palette = pal();
+        let typing = self.naming.is_some()
+            || (!self.fullscreen
+                && !self.ask_folder
+                && !self.quality_open
+                && self.adding_to.is_none()
+                && (self.screen == Screen::Downloads || self.library_typing));
+        let compact = window.viewport_size().width < px(COMPACT_WIDTH);
+        let root = div()
             .track_focus(&self.focus)
-            .key_context(if self.downloads.open {
-                "Recherche"
-            } else {
-                "Lecteur"
-            })
-            .on_key_down(cx.listener(|this, event, _, cx| this.type_in_search(event, cx)))
+            .key_context(if typing { "Recherche" } else { "Lecteur" })
+            .on_key_down(cx.listener(move |this, event, _, cx| {
+                if typing {
+                    this.type_in_search(event, cx);
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, event, window, cx| {
+                this.drag_moved(event, window, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.drag_ended(cx)),
+            )
             .on_action(cx.listener(|this, _: &ToggleDownloads, _, cx| this.toggle_downloads(cx)))
-            .on_action(cx.listener(|this, _: &SubmitSearch, _, cx| this.search(cx)))
+            .on_action(cx.listener(|this, _: &StartSearch, _, cx| this.start_search(cx)))
+            .on_action(cx.listener(|this, _: &SubmitSearch, _, cx| this.submit_search(cx)))
+            .on_action(cx.listener(|this, _: &LeaveSearch, _, cx| this.leave_search(cx)))
             .on_action(cx.listener(|this, _: &EraseSearch, _, cx| this.erase_in_search(cx)))
             .on_action(cx.listener(|this, _: &PasteSearch, _, cx| this.paste_in_search(cx)))
             .on_action(cx.listener(|this, _: &TogglePlay, _, cx| this.toggle_play(cx)))
@@ -939,65 +846,85 @@ impl Render for Onde {
                 this.seek_to(this.position - SEEK_STEP, cx)
             }))
             .on_action(cx.listener(|this, _: &ToggleLyrics, _, cx| this.toggle_lyrics(cx)))
-            .on_action(cx.listener(|this, _: &ToggleVisuals, _, cx| this.toggle_visuals(cx)))
+            .on_action(cx.listener(|this, _: &ToggleVisuals, _, cx| this.visual_key(cx)))
+            .on_action(cx.listener(|this, _: &ToggleQueue, _, cx| this.toggle_queue(cx)))
+            .on_action(cx.listener(|this, _: &LikeCurrent, _, cx| this.like_current(cx)))
+            .on_action(cx.listener(|this, _: &ToggleShuffle, _, cx| this.toggle_shuffle(cx)))
+            .on_action(cx.listener(|this, _: &ToggleFullscreen, _, cx| this.toggle_fullscreen(cx)))
+            .on_action(cx.listener(|this, _: &Leave, _, cx| this.leave(cx)))
             .on_action(cx.listener(|this, _: &VolumeUp, _, cx| this.change_volume(VOLUME_STEP, cx)))
             .on_action(
                 cx.listener(|this, _: &VolumeDown, _, cx| this.change_volume(-VOLUME_STEP, cx)),
             )
             .on_action(cx.listener(|this, _: &OpenNavidrome, _, cx| this.open_navidrome(cx)))
+            .relative()
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(BACKGROUND))
-            .text_color(rgb(TEXT))
-            .child(self.render_header(cx))
-            .when_some(self.message.clone(), |root, message| {
-                root.child(
-                    div()
-                        .px_5()
-                        .pb_2()
-                        .text_sm()
-                        .text_color(rgb(ERROR))
-                        .child(message),
-                )
-            })
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .when(self.show_visuals, |area| area.child(self.render_visuals()))
-                    .child(if self.ask_folder {
-                        self.render_setup(cx).into_any_element()
-                    } else if self.downloads.open {
-                        self.render_downloads(cx).into_any_element()
-                    } else if self.quality_open {
-                        self.render_quality(cx).into_any_element()
-                    } else if self.show_lyrics {
-                        self.render_lyrics(cx)
-                    } else {
-                        self.render_list(cx).into_any_element()
-                    }),
-            )
-            .child(self.render_bar(window, cx))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recognises_images_by_their_first_bytes() {
-        assert_eq!(image_format(&[0xff, 0xd8, 0xff]), Some(ImageFormat::Jpeg));
-        assert_eq!(image_format(b"\x89PNG\r\n"), Some(ImageFormat::Png));
-        assert_eq!(
-            image_format(b"RIFF\0\0\0\0WEBPVP8"),
-            Some(ImageFormat::Webp)
-        );
-        assert_eq!(image_format(b"<html>"), None);
-        assert_eq!(image_format(b""), None);
+            .font_family("Instrument Sans")
+            .text_size(px(14.))
+            .line_height(px(20.))
+            .bg(palette.ink)
+            .text_color(palette.tx);
+        let bar = self.render_bar(window, cx);
+        let main = if self.fullscreen {
+            self.render_fullscreen(window, cx).into_any_element()
+        } else {
+            let screen = self.screen.clone();
+            let page = if self.ask_folder {
+                self.render_setup(cx).into_any_element()
+            } else if self.quality_open {
+                self.render_quality(cx).into_any_element()
+            } else {
+                match &screen {
+                    Screen::Home => self.render_home(window, cx).into_any_element(),
+                    Screen::Library => self.render_library(window, cx).into_any_element(),
+                    Screen::Album(key) => self.render_album(key, window, cx),
+                    Screen::Artist(name) => self.render_artist(name, window, cx),
+                    Screen::Playlists => self.render_playlists(cx).into_any_element(),
+                    Screen::Liked => self.render_collection(None, window, cx),
+                    Screen::Playlist(index) => {
+                        self.render_collection(Some(*index), window, cx)
+                    }
+                    Screen::Downloads => self.render_downloads(window, cx).into_any_element(),
+                    Screen::Sources => self.render_sources(cx).into_any_element(),
+                    Screen::Settings => self.render_settings(cx).into_any_element(),
+                }
+            };
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(self.render_top(compact, cx))
+                .when_some(self.message.clone(), |column, message| {
+                    column.child(
+                        div()
+                            .px_8()
+                            .pb_2()
+                            .text_size(px(13.))
+                            .text_color(ERROR)
+                            .child(message),
+                    )
+                })
+                .child(div().flex_1().min_h_0().flex().flex_col().child(page))
+                .into_any_element()
+        };
+        let queue = self.show_queue.then(|| self.render_queue(cx));
+        root.child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .child(div().flex_1().min_w_0().flex().flex_col().child(main))
+                .when_some(queue, |row, queue| row.child(queue)),
+        )
+        .child(bar)
+        .when(compact && !self.fullscreen, |root| {
+            root.child(self.render_tabs(cx))
+        })
+        .when(self.adding_to.is_some(), |root| {
+            root.child(self.render_add_menu(cx))
+        })
     }
 }

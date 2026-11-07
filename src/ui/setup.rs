@@ -57,8 +57,9 @@ impl Onde {
         }
     }
 
-    pub(super) fn render_setup(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_setup(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let new_folder = default_music_folder(dirs::audio_dir(), dirs::home_dir());
+        let palette = pal();
         div()
             .flex_1()
             .min_h_0()
@@ -67,11 +68,11 @@ impl Onde {
             .items_center()
             .justify_center()
             .gap_4()
-            .px_5()
-            .child(div().text_xl().child("Où ranger ta musique ?"))
+            .px_8()
+            .child(display("Où ranger ta musique ?", 48.))
             .child(
                 div()
-                    .text_color(rgb(MUTED))
+                    .text_color(palette.tx2)
                     .child("Mets-y tes morceaux à la main : tes téléchargements iront aussi là."),
             )
             .child(
@@ -79,17 +80,17 @@ impl Onde {
                     .flex()
                     .gap_2()
                     .child(
-                        button("setup-pick", "Choisir un dossier")
+                        primary("setup-pick", "Choisir un dossier")
                             .on_click(cx.listener(|this, _, _, cx| this.pick_music_folder(cx))),
                     )
                     .when_some(new_folder.clone(), |row, folder| {
-                        row.child(button("setup-create", "Créer un dossier Onde").on_click(
+                        row.child(btn("setup-create", "Créer un dossier Onde").on_click(
                             cx.listener(move |this, _, _, cx| {
                                 this.create_music_folder(folder.clone(), cx);
                             }),
                         ))
                     })
-                    .child(button("setup-later", "Plus tard").on_click(cx.listener(
+                    .child(ghost("setup-later", "Plus tard").on_click(cx.listener(
                         |this, _, _, cx| {
                             this.ask_folder = false;
                             cx.notify();
@@ -98,10 +99,8 @@ impl Onde {
             )
             .when_some(new_folder, |page, folder| {
                 page.child(
-                    div()
-                        .text_sm()
-                        .text_color(rgb(MUTED))
-                        .child(format!("Le dossier créé sera : {}", folder.display())),
+                    mono(format!("Le dossier créé sera : {}", folder.display()))
+                        .text_color(palette.tx3),
                 )
             })
     }

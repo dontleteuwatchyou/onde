@@ -1,4 +1,5 @@
 use super::*;
+use gpui::rgb;
 
 impl Onde {
     pub(super) fn inspect_track(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -36,7 +37,7 @@ impl Onde {
         cx.notify();
     }
 
-    pub(super) fn render_quality(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_quality(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let mut panel = div()
             .id("quality-report")
             .flex_1()
@@ -47,7 +48,7 @@ impl Onde {
             .flex_col()
             .gap_3()
             .child(
-                button("quality-close", "Retour à la bibliothèque").on_click(cx.listener(
+                btn("quality-close", "Retour à la bibliothèque").on_click(cx.listener(
                     |this, _, _, cx| {
                         this.quality_open = false;
                         cx.notify();
@@ -70,10 +71,10 @@ impl Onde {
                 .items_end()
                 .h(px(130.))
                 .w_full()
-                .bg(rgb(SURFACE))
+                .bg(pal().deep)
                 .flex_shrink_0();
             for db in &report.spectrum {
-                bars = bars.child(div().flex_1().h(px((db + 120.).max(1.))).bg(rgb(ACCENT)));
+                bars = bars.child(div().flex_1().h(px((db + 120.).max(1.))).bg(pal().spark));
             }
             panel = panel.child(bars).child(format!("0 Hz                                    Fréquence linéaire                                    {} Hz", report.rate / 2))
                 .child("Spectrogramme · temps → · fréquence ↑ · sombre = −120 dB, clair = 0 dB");

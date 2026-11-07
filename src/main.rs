@@ -1,16 +1,23 @@
 mod analysis;
+mod assets;
+mod catalog;
+mod collections;
 mod config;
+mod cover_host;
 mod decoder;
+mod discord;
 mod download;
 mod dsp;
 mod engine;
 mod http_source;
 mod library;
 mod lyrics;
+mod online_cover;
 mod quality;
 mod queue;
 mod sources;
 mod telegram;
+mod theme;
 mod ui;
 mod visuals;
 
@@ -83,9 +90,12 @@ fn main() -> ExitCode {
             std::env::args_os().nth(1).unwrap_or_default(),
         )),
     };
-    Application::new().run(move |cx: &mut App| {
+    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
+        if let Err(error) = assets::load_fonts(cx) {
+            eprintln!("Polices non chargées : {error:#}");
+        }
         ui::bind_keys(cx);
-        let bounds = Bounds::centered(None, size(px(980.), px(660.)), cx);
+        let bounds = Bounds::centered(None, size(px(1180.), px(780.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

@@ -17,6 +17,17 @@ pub struct Config {
     /// Where the user keeps their music, and where downloads go.
     #[serde(alias = "download_folder")]
     pub music_folder: Option<PathBuf>,
+    pub theme: Option<String>,
+    pub visual: Option<String>,
+    /// Albums listened to, latest first.
+    pub recent_albums: Vec<String>,
+    pub collections: crate::collections::Collections,
+    pub discord_enabled: bool,
+    /// Of an application the user made on Discord's developer site.
+    pub discord_client_id: Option<String>,
+    /// Puts every cover of the library on a public host, ahead of time.
+    pub host_covers: bool,
+    pub shuffle: bool,
 }
 
 fn path() -> Result<PathBuf> {
@@ -81,6 +92,7 @@ mod tests {
                 token: "t".into(),
             }),
             music_folder: Some("/musique".into()),
+            ..Config::default()
         }
     }
 

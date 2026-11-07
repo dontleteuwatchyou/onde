@@ -241,6 +241,7 @@ mod tests {
             duration: 200.0,
             extension: None,
             format: String::new(),
+            added: 0,
         }
     }
 

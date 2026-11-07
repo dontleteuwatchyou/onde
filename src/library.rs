@@ -35,6 +35,8 @@ pub struct Track {
     pub extension: Option<String>,
     /// How it is encoded, for display: « FLAC 24 bits 96 kHz », « M4A 128 kb/s ».
     pub format: String,
+    /// When it arrived. Only comparable between tracks of the same source.
+    pub added: u64,
 }
 
 const COVER_NAMES: &[&str] = &[
@@ -130,6 +132,11 @@ fn read_track(path: &Path) -> Track {
         duration: 0.0,
         extension: None,
         format: String::new(),
+        added: std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |age| age.as_secs()),
     };
     let Ok(file) = lofty::read_from_path(path) else {
         return track;
