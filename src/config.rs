@@ -2,6 +2,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -62,10 +63,12 @@ fn save_to(config: &Config, path: &Path) -> Result<()> {
     // Write beside it then rename, so a crash can't leave a truncated file.
     let temporary = path.with_extension("tmp");
     let _ = fs::remove_file(&temporary);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    // Under Windows, the user's profile folder is already private.
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
         .open(&temporary)
         .context("écriture de la configuration")?;
     file.write_all(serde_json::to_string_pretty(config)?.as_bytes())?;
@@ -83,6 +86,7 @@ mod tests {
         let config: Config = serde_json::from_str(r#"{"download_folder":"/m"}"#).unwrap();
         assert_eq!(config.music_folder, Some("/m".into()));
     }
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn config() -> Config {
@@ -104,8 +108,11 @@ mod tests {
         let _ = fs::remove_file(&path);
         save_to(&config(), &path).unwrap();
         assert_eq!(load_from(&path), config());
-        let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
     }
 
     #[test]
