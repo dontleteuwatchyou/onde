@@ -22,7 +22,9 @@ pub fn inspect(path: &Path) -> Result<Report> {
     let mut magic = [0; 4];
     File::open(path)?.read_exact(&mut magic)?;
     let integrity = if &magic == b"fLaC" {
-        let mut child = Command::new("flac")
+        let mut command = Command::new("flac");
+        crate::download::hide_console(&mut command);
+        let mut child = command
             .args(["--test", "--silent", "--"])
             .arg(path)
             .stdout(Stdio::null())
@@ -142,7 +144,7 @@ pub fn inspect(path: &Path) -> Result<Report> {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #[test]
     fn verifies_flac_and_rejects_corruption() {
