@@ -28,3 +28,23 @@ jobs:
         with:
           name: onde-windows-x86_64
           path: onde-windows-x86_64.exe
+      # Sans PC Windows sous la main : on lance la vraie appli et on garde une capture.
+      - name: Lancer Onde et capturer sa fenêtre
+        shell: pwsh
+        run: |
+          $onde = Start-Process -PassThru target/release/onde.exe
+          Start-Sleep 15
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $image = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          [System.Drawing.Graphics]::FromImage($image).CopyFromScreen($screen.Location, [System.Drawing.Point]::Empty, $screen.Size)
+          $image.Save("$PWD/fenetre-windows.png")
+          if ($onde.HasExited) { throw "Onde s'est arrêté au lancement (code $($onde.ExitCode))." }
+          $onde.Refresh()
+          "Onde tourne. Fenêtre : '$($onde.MainWindowTitle)', handle $($onde.MainWindowHandle)."
+          Stop-Process $onde
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fenetre-windows
+          path: fenetre-windows.png
