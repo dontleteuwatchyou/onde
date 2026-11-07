@@ -130,7 +130,7 @@ async def main():
         from telethon import TelegramClient, events, errors, functions
         import qrcode
     except ImportError:
-        emit(status='Dépendances manquantes : voir design/telegram-source-review.md.')
+        emit(status='Dépendances manquantes : voir la section Telegram du README.')
         return
     os.umask(0o077)
     root = Path(sys.argv[1])

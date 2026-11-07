@@ -40,8 +40,10 @@ fn python() -> std::ffi::OsString {
     if let Some(python) = std::env::var_os("ONDE_TELEGRAM_PYTHON") {
         return python;
     }
-    let venv = Path::new(env!("CARGO_MANIFEST_DIR")).join(".venv-telegram/bin/python");
-    if venv.exists() { venv.into() } else { "python3".into() }
+    match dirs::data_dir().map(|data| data.join("onde/telegram-venv/bin/python")) {
+        Some(venv) if venv.exists() => venv.into(),
+        _ => "python3".into(),
+    }
 }
 
 /// API identifiers from `api.env`, so the app also works when not launched from a

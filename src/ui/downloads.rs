@@ -50,22 +50,20 @@ impl Downloads {
             .or_else(dirs::audio_dir)
             .or_else(|| dirs::home_dir().map(|home| home.join("Musique")))
             .unwrap_or_else(|| PathBuf::from("."));
-        // The bridge lives as long as the app. It only reaches Telegram by itself when
-        // a session already exists, i.e. when the user accepted the permissions before.
+        // Once the user accepted Telegram (a session exists), the bridge lives as long as
+        // the app. Without a session nothing starts, so Python stays optional.
         let session = Telegram::has_session();
         let mut startup_error = None;
-        let telegram = match Telegram::start() {
-            Ok(mut bridge) => {
-                if session && let Err(error) = bridge.send(json!({"action": "connect"})) {
-                    startup_error = Some(format!("{error:#}").into());
-                }
-                Some(bridge)
+        let mut telegram = None;
+        if session {
+            match Telegram::start().and_then(|mut bridge| {
+                bridge.send(json!({"action": "connect"}))?;
+                Ok(bridge)
+            }) {
+                Ok(bridge) => telegram = Some(bridge),
+                Err(error) => startup_error = Some(format!("{error:#}").into()),
             }
-            Err(error) => {
-                startup_error = Some(format!("{error:#}").into());
-                None
-            }
-        };
+        }
         Self {
             telegram,
             telegram_consent: session,

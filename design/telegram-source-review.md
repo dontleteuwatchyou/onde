@@ -4,17 +4,16 @@
 
 Linux, Python 3.10+ et un compte Telegram déjà ouvert sur un appareil sont
 nécessaires. L’intégration se trouve dans l’écran Téléchargements d’Onde.
-Le pont Python démarre et s’arrête avec l’application. Sans session, il reste
-inactif jusqu’à l’acceptation des permissions. Si une session existe déjà, Onde se
-reconnecte au lancement, sans envoyer de message. Les dépendances Python sont
+Sans session, le pont Python ne démarre pas tant que les permissions ne sont pas
+acceptées. Si une session existe déjà, il démarre et s’arrête avec l’application,
+et Onde se reconnecte au lancement, sans envoyer de message. Les dépendances Python sont
 facultatives et ne sont pas installées par Onde.
 
 Depuis la racine du dépôt :
 
 ```sh
-python3 -m venv .venv-telegram
-.venv-telegram/bin/pip install -r integrations/telegram/requirements.txt
-export ONDE_TELEGRAM_PYTHON="$PWD/.venv-telegram/bin/python"
+python3 -m venv ~/.local/share/onde/telegram-venv
+~/.local/share/onde/telegram-venv/bin/pip install -r integrations/telegram/requirements.txt
 export ONDE_TELEGRAM_API_ID='identifiant-de-votre-application'
 export ONDE_TELEGRAM_API_HASH='hash-de-votre-application'
 cargo run
@@ -24,8 +23,8 @@ Obtenir les identifiants de l’application sur
 [my.telegram.org](https://my.telegram.org), conformément aux
 [prérequis API](https://core.telegram.org/api/obtaining_api_id).
 Sans ces variables, Onde lit `~/.config/onde/telegram/api.env` (lignes
-`ONDE_TELEGRAM_API_ID=…` et `ONDE_TELEGRAM_API_HASH=…`). Sans
-`ONDE_TELEGRAM_PYTHON`, Onde utilise `.venv-telegram` s’il existe, sinon `python3`.
+`ONDE_TELEGRAM_API_ID=…` et `ONDE_TELEGRAM_API_HASH=…`). Onde utilise
+`ONDE_TELEGRAM_PYTHON` s’il est défini, sinon `~/.local/share/onde/telegram-venv`, sinon `python3`.
 Ces identifiants ne sont ni le code de connexion ni le mot de passe 2FA.
 Ne pas les publier ni les mettre dans le dépôt. Ils sont hérités par le processus
 Python via l’environnement ; ils ne sont pas dans ses arguments.
@@ -143,7 +142,7 @@ Sources : [Telethon](https://github.com/LonamiWebs/Telethon/blob/v1/LICENSE),
 ```sh
 cargo check --offline
 cargo test --offline
-.venv-telegram/bin/python -m unittest discover -s integrations/telegram -v
+~/.local/share/onde/telegram-venv/bin/python -m unittest discover -s integrations/telegram -v
 ```
 
 Compilation vérifiée ; 88 tests Rust réussis, 7 tests d’intégration préexistants
