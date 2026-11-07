@@ -126,21 +126,24 @@ def expand_link(text):
     return text
 
 
+def track(artists, title):
+    artists = [artist.strip() for artist in artists if artist and artist.strip()]
+    return {'artists': artists, 'title': (title or '').strip()[:200]}
+
+
 def deezer_tracks(kind, ident):
-    name, queries, index = None, [], 0
+    tracks, index = [], 0
     info = json.loads(fetch(f'https://api.deezer.com/{kind}/{ident}')[1])
     if 'error' in info:
         raise ValueError('introuvable')
-    name = info.get('title')
-    while len(queries) < PLAYLIST_LIMIT:
+    while len(tracks) < PLAYLIST_LIMIT:
         page = json.loads(fetch(f'https://api.deezer.com/{kind}/{ident}/tracks?index={index}&limit=100')[1])
-        for track in page.get('data', []):
-            artist = (track.get('artist') or {}).get('name') or ''
-            queries.append(f'{artist} {track.get("title", "")}'.strip())
+        for item in page.get('data', []):
+            tracks.append(track([(item.get('artist') or {}).get('name')], item.get('title')))
         index += 100
         if not page.get('next') or not page.get('data'):
             break
-    return name, queries
+    return info.get('title'), tracks
 
 
 def spotify_tracks(kind, ident):
@@ -150,22 +153,24 @@ def spotify_tracks(kind, ident):
     if not match:
         raise ValueError('page')
     entity = json.loads(match[1])['props']['pageProps']['state']['data']['entity']
-    queries = [f'{track.get("subtitle", "")} {track.get("title", "")}'.strip()
-               for track in entity.get('trackList', [])]
-    return entity.get('name') or entity.get('title'), queries
+    # "subtitle" lists every artist: "Fuck Leeches, symbiose dona".
+    tracks = [track(re.split(r',\s', item.get('subtitle') or ''), item.get('title'))
+              for item in entity.get('trackList', [])]
+    return entity.get('name') or entity.get('title'), tracks
 
 
-def soundcloud_query(entry):
+def soundcloud_track(entry):
     if entry.get('title'):
-        return f'{entry.get("uploader") or ""} {entry["title"]}'.strip()
+        return track([entry.get('uploader')], entry['title'])
     # Flat listings only give the page address: "user/track-slug".
     parts = urllib.parse.urlparse(entry.get('url') or '').path.strip('/').split('/')
     if len(parts) < 2:
-        return ''
+        return track([], '')
     user, slug = parts[0], parts[1]
     if slug.startswith(user + '-'):
         slug = slug[len(user) + 1:]
-    return f'{user} {slug}'.replace('-', ' ').replace('_', ' ').strip()
+    spaced = lambda text: text.replace('-', ' ').replace('_', ' ')
+    return track([spaced(user)], spaced(slug))
 
 
 def soundcloud_tracks(url):
@@ -173,22 +178,67 @@ def soundcloud_tracks(url):
     output = subprocess.run([program, '--flat-playlist', '--dump-single-json', '--no-warnings', '--', url],
                             capture_output=True, timeout=120, check=True).stdout
     data = json.loads(output)
-    queries = [soundcloud_query(entry) for entry in data.get('entries') or []]
-    return data.get('title'), [query for query in queries if query]
+    return data.get('title'), [soundcloud_track(entry) for entry in data.get('entries') or []]
 
 
 def playlist_tracks(text):
-    """Playlist name and one search per track, or None when the link is not a playlist."""
+    """Playlist name and its tracks, or None when the link is not a playlist."""
     link = playlist_link(expand_link(text))
     if not link:
         return None
     if link[0] == 'deezer':
-        name, queries = deezer_tracks(link[1], link[2])
+        name, tracks = deezer_tracks(link[1], link[2])
     elif link[0] == 'spotify':
-        name, queries = spotify_tracks(link[1], link[2])
+        name, tracks = spotify_tracks(link[1], link[2])
     else:
-        name, queries = soundcloud_tracks(link[1])
-    return name or 'Playlist', [query[:200] for query in queries if query][:PLAYLIST_LIMIT]
+        name, tracks = soundcloud_tracks(link[1])
+    return name or 'Playlist', [item for item in tracks if item['title']][:PLAYLIST_LIMIT]
+
+
+def track_label(item):
+    return f'{", ".join(item["artists"])} – {item["title"]}' if item['artists'] else item['title']
+
+
+def clean_title(title):
+    """Drops what the bot's catalogue often names differently: featurings, remaster notes."""
+    cleaned = re.sub(r'\s*[(\[](?:feat|ft|with|avec)\b[^)\]]*[)\]]', '', title, flags=re.I)
+    cleaned = re.sub(r'\s+-\s+[^-]*\b(?:remaster(?:ed)?|version|edit|live|mono|stereo)\b.*$', '',
+                     cleaned, flags=re.I)
+    return cleaned.strip() or title
+
+
+def search_queries(item):
+    """Searches to try in order, and whether the result must name one of the artists."""
+    title = clean_title(item['title'])
+    artist = item['artists'][0] if item['artists'] else ''
+    candidates = [(f'{artist} {title}', False),
+                  (f'{" ".join(words(artist))} {" ".join(words(title))}', False),
+                  (title, True), (' '.join(words(title)), True)]
+    seen, queries = set(), []
+    for query, verify in candidates:
+        query = query.strip()
+        if query and query.lower() not in seen:
+            seen.add(query.lower())
+            queries.append((query, verify))
+    return queries
+
+
+def result_words(result):
+    text = ' '.join(filter(None, [getattr(result, 'title', None), getattr(result, 'description', None)]))
+    for attr in getattr(getattr(result, 'document', None), 'attributes', []) or []:
+        text += ' ' + ' '.join(filter(None, [getattr(attr, 'performer', None), getattr(attr, 'title', None)]))
+    return set(words(text))
+
+
+def best_result(results, item, verify):
+    """First result naming one of the artists; else the first one, unless it must match."""
+    for result in results[:10]:
+        text = result_words(result)
+        if any(set(words(artist)) and set(words(artist)) <= text for artist in item['artists']):
+            return result
+    if verify and item['artists']:
+        return None
+    return results[0] if results else None
 
 
 def readable_name(audio, message):
@@ -309,7 +359,7 @@ async def main():
     # Download queue: inline results or searches, prepared PARALLEL at a time.
     waiting = deque()
     preparing = {}
-    batch = {'name': '', 'total': 0, 'done': 0, 'present': 0, 'failed': [], 'current': ''}
+    batch = {'name': '', 'total': 0, 'done': 0, 'present': 0, 'failed': [], 'retry': [], 'current': ''}
     runner = None
     transfer = asyncio.Lock()
     synthetic = 0
@@ -452,7 +502,8 @@ async def main():
     def enqueue(items, name):
         nonlocal runner
         if not runner or runner.done():
-            batch.update(name=name, total=0, done=0, present=0, failed=[], current='', finished=False)
+            batch.update(name=name, total=0, done=0, present=0, failed=[], retry=[], current='',
+                         finished=False)
         elif name and batch['name'] != name:
             batch['name'] = 'Plusieurs demandes'
         batch['total'] += len(items)
@@ -471,20 +522,40 @@ async def main():
         batch['finished'] = True
         report()
 
-    def fail(label, reason):
-        batch['failed'].append(f'{label} ({reason})')
+    def fail(item, reason):
+        batch['failed'].append(f'{item["label"]} ({reason})')
+        batch['retry'].append(item)
+
+    async def inline_search(query):
+        # The bot sometimes takes too long to answer: try again a little later.
+        for attempt in range(3):
+            try:
+                return await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
+                    bot=bot, peer=bot, query=query, offset='')), 30)
+            except Exception as error:
+                if attempt == 2 or type(error).__name__ not in ('BotResponseTimeoutError', 'TimeoutError'):
+                    raise
+                await asyncio.sleep(3 * (attempt + 1))
 
     async def prepare(item):
         """Ask the bot for one track; returns False when it has nothing for it."""
         nonlocal synthetic
-        if 'query' in item:
-            results = await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
-                bot=bot, peer=bot, query=item['query'], offset='')), 30)
-            if not results.results:
-                fail(item['label'], 'introuvable')
+        if 'track' in item:
+            found = fallback = None
+            for query, verify in search_queries(item['track']):
+                results = await inline_search(query)
+                chosen = best_result(results.results, item['track'], True)
+                if chosen:
+                    found = (results.query_id, chosen.id)
+                    break
+                # Without the artist in the answer, the first result of a full search.
+                if fallback is None and not verify and results.results:
+                    fallback = (results.query_id, results.results[0].id)
+            found = found or fallback
+            if not found:
+                fail(item, 'introuvable')
                 return False
-            first = results.results[0]
-            query_id, result_id = results.query_id, first.id
+            query_id, result_id = found
         else:
             query_id, result_id = item['inline']
         updates = await client(functions.messages.SendInlineBotResultRequest(
@@ -511,7 +582,7 @@ async def main():
                     emit(status=f'Limite Telegram : reprise dans {error.seconds} secondes.')
                     await asyncio.sleep(min(error.seconds, 600) + 1)
                 except Exception as error:
-                    fail(item['label'], type(error).__name__)
+                    fail(item, type(error).__name__)
                 report()
             await asyncio.sleep(BOT_POLL_SECONDS)
             try:
@@ -538,12 +609,12 @@ async def main():
                         batch['present'] += outcome == 'present'
                 except Exception as error:
                     if entry:
-                        fail(entry[0]['label'], type(error).__name__)
+                        fail(entry[0], type(error).__name__)
             now = time.monotonic()
             for ident, (item, started) in list(preparing.items()):
                 if now - started > BOT_PREPARE_SECONDS:
                     del preparing[ident]
-                    fail(item['label'], 'le bot n’a rien envoyé en 3 min')
+                    fail(item, 'le bot n’a rien envoyé en 3 min')
             report()
         batch['current'] = ''
         batch['finished'] = True
@@ -631,25 +702,26 @@ async def main():
                     emit(status=f'Playlist illisible ({type(error).__name__}) : lien public requis.')
                     return
                 if playlist is not None:
-                    name, queries = playlist
+                    name, tracks = playlist
                     names = library_names(folder)
                     unique, seen = [], set()
-                    for query in queries:
-                        key = ' '.join(sorted(words(query)))
+                    for item in tracks:
+                        key = ' '.join(sorted(words(track_label(item))))
                         if key not in seen:
                             seen.add(key)
-                            unique.append(query)
-                    fresh = [query for query in unique if not already_have(query, names)]
-                    skipped = len(queries) - len(fresh)
-                    queries = fresh
+                            unique.append(item)
+                    have = lambda item: already_have(
+                        f'{item["artists"][0] if item["artists"] else ""} {clean_title(item["title"])}', names)
+                    fresh = [item for item in unique if not have(item)]
+                    skipped = len(tracks) - len(fresh)
                     if skipped:
                         emit(status=f'« {name} » : {skipped} morceau(x) déjà présents ou en double, ignorés.')
-                    if not queries:
+                    if not fresh:
                         emit(status=f'« {name} » : rien de nouveau à télécharger.')
                         return
-                    emit(status=f'« {name} » : {len(queries)} morceaux à chercher et télécharger. '
+                    emit(status=f'« {name} » : {len(fresh)} morceaux à chercher et télécharger. '
                          'Le bot les prépare un par un, ça peut prendre un moment.')
-                    enqueue([{'query': query, 'label': query} for query in queries], name)
+                    enqueue([{'track': item, 'label': track_label(item)} for item in fresh], name)
                     return
             inline_results.clear()
             if not text.startswith(('https://', 'http://')):
@@ -701,6 +773,12 @@ async def main():
                 emit(status='Bot : ' + answer.message[:600])
         elif action == 'queue':
             queue_results(cmd.get('keys') or [])
+        elif action == 'retry':
+            items = batch['retry']
+            if not client or not bot or not items or (runner and not runner.done()):
+                return
+            emit(status=f'Nouvel essai pour {len(items)} morceau(x).')
+            enqueue(list(items), f'Réessai · {batch["name"]}')
         elif action == 'receive':
             message = pending.pop(int(cmd['id']), None)
             if message:
@@ -781,7 +859,7 @@ async def main():
                     break
             elif operation and not operation.done():
                 # Requeue automatic files rather than lose album replies during transfer.
-                if action in ('receive', 'click', 'send', 'queue'):
+                if action in ('receive', 'click', 'send', 'queue', 'retry'):
                     await asyncio.sleep(.1)
                     await commands.put(cmd)
                 else:
