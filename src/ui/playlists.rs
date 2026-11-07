@@ -328,6 +328,11 @@ impl Onde {
                                 ))
                             })
                             .when_some(playlist, |row, index| {
+                                row.child(btn("playlist-fill", "Ajouter des sons").on_click(
+                                    cx.listener(move |this, _, _, cx| this.open_fill_menu(index, cx)),
+                                ))
+                            })
+                            .when_some(playlist, |row, index| {
                                 row.child(
                                     ghost(
                                         "playlist-delete",
@@ -357,7 +362,7 @@ impl Onde {
                 .text_color(palette.tx2)
                 .child(match playlist {
                     None => "Aucun titre liké pour l’instant : clique sur le cœur d’un morceau, ou appuie sur H.",
-                    Some(_) => "Cette playlist est vide : ajoute des morceaux avec le + d’une ligne.",
+                    Some(_) => "Cette playlist est vide : clique sur « Ajouter des sons » pour choisir dans ta bibliothèque.",
                 })
                 .into_any_element()
         } else {
@@ -407,6 +412,236 @@ impl Onde {
                     .child(body),
             )
             .into_any_element()
+    }
+
+    fn open_fill_menu(&mut self, playlist: usize, cx: &mut Context<Self>) {
+        self.filling = Some(playlist);
+        self.fill_query.clear();
+        self.deleting = false;
+        cx.notify();
+    }
+
+    /// Library tracks matching what is typed in the picker, in library order.
+    fn fill_matches(&self) -> Vec<usize> {
+        let words: Vec<String> = self
+            .fill_query
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        self.queue
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(_, track)| {
+                let text = format!("{} {} {}", track.title, track.artist, track.album).to_lowercase();
+                words.iter().all(|word| text.contains(word.as_str()))
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Adds the track, or takes it back out when it is already there.
+    fn toggle_in_playlist(&mut self, playlist: usize, index: usize, cx: &mut Context<Self>) {
+        let Some(id) = self.queue.tracks.get(index).map(track_id) else {
+            return;
+        };
+        if !self.collections.add(playlist, &id) {
+            self.collections.remove(playlist, &id);
+        }
+        self.save_collections();
+        cx.notify();
+    }
+
+    /// Enter in the picker adds the first match, then clears the filter for the next one.
+    pub(super) fn add_first_match(&mut self, cx: &mut Context<Self>) {
+        let Some(playlist) = self.filling else { return };
+        if let Some(&index) = self.fill_matches().first() {
+            if let Some(id) = self.queue.tracks.get(index).map(track_id) {
+                self.collections.add(playlist, &id);
+                self.save_collections();
+            }
+        }
+        self.fill_query.clear();
+        cx.notify();
+    }
+
+    /// "Add songs": every library track, ticked when already in the playlist.
+    pub(super) fn render_fill_menu(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = pal();
+        let playlist = self.filling.unwrap_or_default();
+        let (name, present) = self
+            .collections
+            .playlists
+            .get(playlist)
+            .map(|found| (found.name.clone(), found.tracks.clone()))
+            .unwrap_or_default();
+        let present: std::collections::HashSet<String> = present.into_iter().collect();
+        let matches = Rc::new(self.fill_matches());
+        let rows: Rc<Vec<(usize, String, String, bool)>> = Rc::new(
+            matches
+                .iter()
+                .map(|&index| {
+                    let track = &self.queue.tracks[index];
+                    let artist = if track.album.is_empty() {
+                        track.artist.clone()
+                    } else {
+                        format!("{} · {}", track.artist, track.album)
+                    };
+                    (index, track.title.clone(), artist, present.contains(&track_id(track)))
+                })
+                .collect(),
+        );
+        let added = present.len();
+        let query = self.fill_query.clone();
+        let field = div()
+            .h(px(40.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .rounded(px(10.))
+            .bg(palette.rise2)
+            .border_1()
+            .border_color(palette.tide)
+            .child(icon("search", 16., palette.tx2))
+            .child(div().truncate().child(format!("{query}▏")))
+            .when(query.is_empty(), |field| {
+                field.child(
+                    div()
+                        .text_color(palette.tx3)
+                        .child("Filtrer par titre, artiste ou album"),
+                )
+            });
+        let list = if rows.is_empty() {
+            div()
+                .py_4()
+                .text_color(palette.tx2)
+                .child(if self.queue.tracks.is_empty() {
+                    "La bibliothèque est vide."
+                } else {
+                    "Aucun morceau ne correspond."
+                })
+                .into_any_element()
+        } else {
+            let count = rows.len();
+            uniform_list(
+                "fill-tracks",
+                count,
+                cx.processor(move |_, range: Range<usize>, _, cx| {
+                    range
+                        .map(|row| {
+                            let (index, title, artist, inside) = rows[row].clone();
+                            let palette = pal();
+                            div()
+                                .id(("fill", index))
+                                .h(px(48.))
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .px_3()
+                                .rounded(px(10.))
+                                .cursor_pointer()
+                                .hover(|row| row.bg(pal().rise2))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_in_playlist(playlist, index, cx);
+                                }))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .size(px(20.))
+                                        .rounded(px(5.))
+                                        .border_1()
+                                        .border_color(if inside { palette.spark } else { palette.tx3 })
+                                        .when(inside, |tick| tick.bg(palette.spark))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .text_size(px(13.))
+                                        .text_color(palette.deep)
+                                        .when(inside, |tick| tick.child("✓")),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().truncate().child(title))
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_size(px(12.))
+                                                .text_color(palette.tx2)
+                                                .child(artist),
+                                        ),
+                                )
+                        })
+                        .collect()
+                }),
+            )
+            .h(px(420.))
+            .w_full()
+            .into_any_element()
+        };
+        div()
+            .id("fill-menu")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::Rgba {
+                a: 0.6,
+                ..palette.deep
+            })
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.filling = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("fill-menu-card")
+                    .w(px(560.))
+                    .max_w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_4()
+                    .rounded(px(16.))
+                    .bg(palette.rise)
+                    .border_1()
+                    .border_color(palette.line)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(h2(format!("Ajouter des sons à « {name} »")))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(palette.tx2)
+                            .child(format!(
+                                "Clique sur un morceau pour l’ajouter ou le retirer. {} · {} affichés.",
+                                count_label(added),
+                                matches.len()
+                            )),
+                    )
+                    .child(field)
+                    .child(list)
+                    .child(
+                        div().flex().justify_end().child(
+                            primary("fill-done", "Terminé").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.filling = None;
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                    ),
+            )
     }
 
     /// "Add to a playlist", over everything else.

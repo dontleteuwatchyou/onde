@@ -44,16 +44,22 @@ class TelegramClient:
   return N(id=42)
  async def __call__(self, request):
   if request[0] == 'results':
-   return N(query_id=1, results=[N(id='a', title='Titre', description='Artiste')])
-  self.posted = 0
-  return N()
+   return N(query_id=1, results=[N(id='a', title='Titre', description='Artiste'),
+       N(id='b', title='Autre', description='Artiste')])
+  # Telegram names the posted message; the bot edits the audio into it later.
+  self.posts = getattr(self, 'posts', [])
+  self.posts.append([60 + len(self.posts), 0])
+  update = type('UpdateMessageID', (), {})()
+  update.id = self.posts[-1][0]
+  return N(updates=[update])
  async def get_messages(self, bot, limit):
   old = N(id=40, out=False, via_bot_id=None, sender_id=7, audio=True)
-  if not hasattr(self, 'posted'): return [old]
-  self.posted += 1
-  # Placeholder first: the bot edits the audio in later.
-  return [N(id=60, out=True, via_bot_id=7, sender_id=1, audio=self.posted > 2,
-      file=N(size=32), document=N(attributes=[]), raw_text=''), old]
+  posted = []
+  for post in getattr(self, 'posts', []):
+   post[1] += 1
+   posted.append(N(id=post[0], out=True, via_bot_id=7, sender_id=1, audio=post[1] > 2,
+       file=N(size=32), document=N(attributes=[]), raw_text=''))
+  return posted[::-1] + [old]
  async def download_file(self, document, file, part_size_kb, file_size, progress_callback):
   file.write(b'fLaC' + bytes(28))
   await progress_callback(32,32)
@@ -165,6 +171,64 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual(len(list(music.iterdir())), 1)
                 send(action='quit')
                 self.assertEqual(proc.wait(timeout=5), 0)
+
+    def test_queue_downloads_every_selected_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'telethon.py').write_text(FAKE)
+            music = root / 'music'
+            music.mkdir()
+            env = dict(os.environ, PYTHONPATH=str(root), ONDE_TELEGRAM_API_ID='1',
+                       ONDE_TELEGRAM_API_HASH='test')
+            with subprocess.Popen([sys.executable, '-u', str(HERE / 'bridge.py'), str(root / 'session')],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, env=env) as proc:
+                def send(**cmd):
+                    proc.stdin.write(json.dumps(cmd) + '\n')
+                    proc.stdin.flush()
+                def until(predicate):
+                    for line in proc.stdout:
+                        event = json.loads(line)
+                        if predicate(event):
+                            return event
+                    self.fail('event missing')
+                send(action='connect')
+                until(lambda e: e.get('busy') is False)
+                send(action='send', text='une recherche', folder=str(music))
+                keys = [b['key'] for b in until(lambda e: e.get('buttons'))['buttons']]
+                send(action='queue', keys=keys + keys)
+                event = until(lambda e: e.get('batch', {}).get('total'))
+                self.assertEqual(event['batch']['total'], 2)
+                event = until(lambda e: 'batch' in e and not e['batch']['active'])
+                self.assertEqual(event['batch']['done'], 2)
+                self.assertEqual(event['batch']['failed'], [])
+                self.assertEqual(len(list(music.iterdir())), 2)
+                send(action='quit')
+                self.assertEqual(proc.wait(timeout=5), 0)
+
+    def test_posted_id_reads_the_new_message(self):
+        update = type('UpdateMessageID', (), {'id': 77})()
+        self.assertEqual(bridge.posted_id(types.SimpleNamespace(updates=[update])), 77)
+        message = type('UpdateNewMessage', (), {'message': types.SimpleNamespace(id=78)})()
+        self.assertEqual(bridge.posted_id(types.SimpleNamespace(updates=[message])), 78)
+        self.assertIsNone(bridge.posted_id(types.SimpleNamespace()))
+
+    def test_playlist_links(self):
+        link = bridge.playlist_link
+        self.assertEqual(link('https://www.deezer.com/fr/playlist/1109890291?utm=x'),
+                         ('deezer', 'playlist', '1109890291'))
+        self.assertEqual(link('https://deezer.com/album/12'), ('deezer', 'album', '12'))
+        self.assertEqual(link('https://open.spotify.com/intl-fr/playlist/37i9dQZF1DXcBWIGoYBM5M?si=1'),
+                         ('spotify', 'playlist', '37i9dQZF1DXcBWIGoYBM5M'))
+        self.assertEqual(link('https://soundcloud.com/user/sets/mix?si=2'),
+                         ('soundcloud', 'https://soundcloud.com/user/sets/mix'))
+        self.assertIsNone(link('https://www.deezer.com/track/3'))
+        self.assertIsNone(link('https://test.example/autorise'))
+
+    def test_soundcloud_slug_becomes_a_search(self):
+        entry = {'url': 'https://soundcloud.com/sweet-medicine/sweet-medicine-w-odyssee-breezin'}
+        self.assertEqual(bridge.soundcloud_query(entry), 'sweet medicine w odyssee breezin')
+        self.assertEqual(bridge.soundcloud_query({'title': 'Titre', 'uploader': 'Moi'}), 'Moi Titre')
 
     def test_explicit_lifecycle_and_reception(self):
         with tempfile.TemporaryDirectory() as tmp:

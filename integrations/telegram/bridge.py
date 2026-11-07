@@ -1,18 +1,27 @@
 """Private JSON-lines bridge. Never print Telegram exceptions or credentials."""
 import asyncio
+from collections import deque
 import json
 import logging
 import os
 from pathlib import Path
+import re
+import subprocess
 import sys
 import time
 import fcntl
+import urllib.parse
+import urllib.request
 
 logging.disable(logging.CRITICAL)
 MAX_SIZE = 512 * 1024 * 1024
 # The bot edits the audio into the posted result: seconds to a minute, sometimes more.
 BOT_PREPARE_SECONDS = 180
 BOT_POLL_SECONDS = 1.5
+# Results the bot prepares at the same time: more would only queue up on its side.
+PARALLEL = 3
+PLAYLIST_LIMIT = 500
+USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) Onde'
 
 
 def emit(**event):
@@ -72,6 +81,114 @@ def new_audio(messages, bot_id, floor_id):
     # which then edits the audio into it. It may also answer with a plain audio message.
     return [m for m in messages if m.audio and m.id > floor_id
             and (m.via_bot_id == bot_id if m.out else m.sender_id == bot_id)]
+
+
+def posted_id(updates):
+    """Id of the message a chosen inline result was posted as, when Telegram says."""
+    for update in getattr(updates, 'updates', None) or []:
+        if type(update).__name__ == 'UpdateMessageID':
+            return update.id
+        message = getattr(update, 'message', None)
+        if type(update).__name__ == 'UpdateNewMessage' and getattr(message, 'id', None):
+            return message.id
+    return None
+
+
+def playlist_link(text):
+    """('deezer'|'spotify', kind, id) or ('soundcloud', url) for a playlist or album link."""
+    text = text.strip()
+    match = re.match(r'https?://(?:www\.)?deezer\.com/(?:[a-z]{2}(?:-[a-z]{2})?/)?(playlist|album)/(\d+)', text)
+    if match:
+        return ('deezer', match[1], match[2])
+    match = re.match(r'https?://open\.spotify\.com/(?:intl-[a-z]+/)?(?:embed/)?(playlist|album)/([A-Za-z0-9]+)', text)
+    if match:
+        return ('spotify', match[1], match[2])
+    if re.match(r'https?://(?:www\.|m\.)?soundcloud\.com/[^/?#]+/sets/[^/?#]+', text):
+        return ('soundcloud', text.split('?')[0])
+    return None
+
+
+SHORT_LINKS = ('link.deezer.com', 'deezer.page.link', 'spotify.link', 'on.soundcloud.com')
+
+
+def fetch(url, limit=8 * 1024 * 1024):
+    request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return response.geturl(), response.read(limit)
+
+
+def expand_link(text):
+    """Share links (link.deezer.com/s/…) redirect to the real playlist page."""
+    host = urllib.parse.urlparse(text.strip()).hostname or ''
+    if host in SHORT_LINKS:
+        final, _ = fetch(text.strip(), 1)
+        return final
+    return text
+
+
+def deezer_tracks(kind, ident):
+    name, queries, index = None, [], 0
+    info = json.loads(fetch(f'https://api.deezer.com/{kind}/{ident}')[1])
+    if 'error' in info:
+        raise ValueError('introuvable')
+    name = info.get('title')
+    while len(queries) < PLAYLIST_LIMIT:
+        page = json.loads(fetch(f'https://api.deezer.com/{kind}/{ident}/tracks?index={index}&limit=100')[1])
+        for track in page.get('data', []):
+            artist = (track.get('artist') or {}).get('name') or ''
+            queries.append(f'{artist} {track.get("title", "")}'.strip())
+        index += 100
+        if not page.get('next') or not page.get('data'):
+            break
+    return name, queries
+
+
+def spotify_tracks(kind, ident):
+    # The embed page carries the track list without an account or API key.
+    page = fetch(f'https://open.spotify.com/embed/{kind}/{ident}')[1].decode('utf-8', 'replace')
+    match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', page, re.S)
+    if not match:
+        raise ValueError('page')
+    entity = json.loads(match[1])['props']['pageProps']['state']['data']['entity']
+    queries = [f'{track.get("subtitle", "")} {track.get("title", "")}'.strip()
+               for track in entity.get('trackList', [])]
+    return entity.get('name') or entity.get('title'), queries
+
+
+def soundcloud_query(entry):
+    if entry.get('title'):
+        return f'{entry.get("uploader") or ""} {entry["title"]}'.strip()
+    # Flat listings only give the page address: "user/track-slug".
+    parts = urllib.parse.urlparse(entry.get('url') or '').path.strip('/').split('/')
+    if len(parts) < 2:
+        return ''
+    user, slug = parts[0], parts[1]
+    if slug.startswith(user + '-'):
+        slug = slug[len(user) + 1:]
+    return f'{user} {slug}'.replace('-', ' ').replace('_', ' ').strip()
+
+
+def soundcloud_tracks(url):
+    program = os.environ.get('ONDE_YT_DLP', 'yt-dlp')
+    output = subprocess.run([program, '--flat-playlist', '--dump-single-json', '--no-warnings', '--', url],
+                            capture_output=True, timeout=120, check=True).stdout
+    data = json.loads(output)
+    queries = [soundcloud_query(entry) for entry in data.get('entries') or []]
+    return data.get('title'), [query for query in queries if query]
+
+
+def playlist_tracks(text):
+    """Playlist name and one search per track, or None when the link is not a playlist."""
+    link = playlist_link(expand_link(text))
+    if not link:
+        return None
+    if link[0] == 'deezer':
+        name, queries = deezer_tracks(link[1], link[2])
+    elif link[0] == 'spotify':
+        name, queries = spotify_tracks(link[1], link[2])
+    else:
+        name, queries = soundcloud_tracks(link[1])
+    return name or 'Playlist', [query[:200] for query in queries if query][:PLAYLIST_LIMIT]
 
 
 def readable_name(audio, message):
@@ -159,10 +276,13 @@ async def main():
     sending = False
     requested = set()
     claimed = set()
-    watcher = None
-    watch_floor = 0
-    watch_until = 0
-    expected = 0
+    # Download queue: inline results or searches, prepared PARALLEL at a time.
+    waiting = deque()
+    preparing = {}
+    batch = {'name': '', 'total': 0, 'done': 0, 'failed': [], 'current': ''}
+    runner = None
+    transfer = asyncio.Lock()
+    synthetic = 0
     commands = asyncio.Queue()
     loop = asyncio.get_running_loop()
     # A daemon reader allows EOF/quit to end without a blocked executor thread.
@@ -220,6 +340,10 @@ async def main():
         emit(connected=True, qr=[], status='Connecté. Aucun message envoyé.')
 
     async def download(message):
+        async with transfer:
+            await download_unlocked(message)
+
+    async def download_unlocked(message):
         if message.id in received:
             return
         size = message.file.size if message.file else 0
@@ -283,34 +407,114 @@ async def main():
             choices.append({'key': key, 'label': label[:200], 'details': result_details(result)})
         emit(buttons=choices, status='Cliquer sur une musique pour la télécharger.' if choices else 'Aucun résultat.')
 
-    def stop_watching():
-        nonlocal expected
-        expected = 0
-        if watcher:
-            watcher.cancel()
+    def report():
+        active = bool(runner and not runner.done() and not batch.get('finished'))
+        emit(batch={'name': batch['name'], 'total': batch['total'], 'done': batch['done'],
+                    'failed': batch['failed'][-50:], 'current': batch['current'],
+                    'active': active})
 
-    async def watch_for_audio():
-        # Polling rather than edit events: history is what Telegram guarantees.
-        nonlocal expected, watch_until
-        while time.monotonic() < watch_until:
+    def enqueue(items, name):
+        nonlocal runner
+        if not runner or runner.done():
+            batch.update(name=name, total=0, done=0, failed=[], current='', finished=False)
+        elif name and batch['name'] != name:
+            batch['name'] = 'Plusieurs demandes'
+        batch['total'] += len(items)
+        waiting.extend(items)
+        if not runner or runner.done():
+            runner = asyncio.create_task(run_queue())
+        report()
+
+    def stop_queue():
+        waiting.clear()
+        preparing.clear()
+        requested.clear()
+        if runner and not runner.done():
+            runner.cancel()
+        batch['current'] = ''
+        batch['finished'] = True
+        report()
+
+    def fail(label, reason):
+        batch['failed'].append(f'{label} ({reason})')
+
+    async def prepare(item):
+        """Ask the bot for one track; returns False when it has nothing for it."""
+        nonlocal synthetic
+        if 'query' in item:
+            results = await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
+                bot=bot, peer=bot, query=item['query'], offset='')), 30)
+            if not results.results:
+                fail(item['label'], 'introuvable')
+                return False
+            first = results.results[0]
+            query_id, result_id = results.query_id, first.id
+        else:
+            query_id, result_id = item['inline']
+        updates = await client(functions.messages.SendInlineBotResultRequest(
+            peer=bot, query_id=query_id, id=result_id))
+        ident = posted_id(updates)
+        if ident is None:
+            synthetic -= 1
+            ident = synthetic
+        preparing[ident] = (item, time.monotonic())
+        return True
+
+    async def run_queue():
+        latest = await client.get_messages(bot, limit=1)
+        floor = latest[0].id if latest else 0
+        while waiting or preparing:
+            while waiting and len(preparing) < PARALLEL:
+                item = waiting.popleft()
+                batch['current'] = item['label']
+                report()
+                try:
+                    await prepare(item)
+                except errors.FloodWaitError as error:
+                    waiting.appendleft(item)
+                    emit(status=f'Limite Telegram : reprise dans {error.seconds} secondes.')
+                    await asyncio.sleep(min(error.seconds, 600) + 1)
+                except Exception as error:
+                    fail(item['label'], type(error).__name__)
+                report()
             await asyncio.sleep(BOT_POLL_SECONDS)
             try:
-                recent = await client.get_messages(bot, limit=20)
+                recent = await client.get_messages(bot, limit=30)
             except Exception:
-                continue
-            for message in reversed(new_audio(recent, bot.id, watch_floor)):
-                if message.id not in claimed:
-                    claimed.add(message.id)
-                    pending[message.id] = message
-                    expected = max(0, expected - 1)
-                    await commands.put({'action': 'receive', 'id': message.id})
-                    if not expected:
-                        # Albums arrive as several files: give the others a moment.
-                        watch_until = time.monotonic() + 30
-        if expected:
-            expected = 0
-            emit(status='Le bot n’a pas envoyé le fichier après 3 minutes : cliquer à nouveau pour réessayer.')
-            requested.clear()
+                recent = []
+            for message in reversed(new_audio(recent, bot.id, floor)):
+                if message.id in claimed:
+                    continue
+                # Our own posts carry known ids, unless Telegram did not say which.
+                if message.out and message.id not in preparing and not any(key < 0 for key in preparing):
+                    continue
+                claimed.add(message.id)
+                ident = message.id if message.id in preparing else next(
+                    (key for key in preparing if key < 0), next(iter(preparing), None))
+                entry = preparing.pop(ident, None) if ident is not None else None
+                label = entry[0]['label'] if entry else message.id
+                batch['current'] = f'Réception : {label}'
+                report()
+                try:
+                    await asyncio.wait_for(download(message), 600)
+                    if entry:
+                        batch['done'] += 1
+                except Exception as error:
+                    if entry:
+                        fail(entry[0]['label'], type(error).__name__)
+            now = time.monotonic()
+            for ident, (item, started) in list(preparing.items()):
+                if now - started > BOT_PREPARE_SECONDS:
+                    del preparing[ident]
+                    fail(item['label'], 'le bot n’a rien envoyé en 3 min')
+            report()
+        batch['current'] = ''
+        batch['finished'] = True
+        requested.clear()
+        report()
+        missing = len(batch['failed'])
+        emit(status=f'Terminé : {batch["done"]} / {batch["total"]} reçus'
+             + (f', {missing} en échec.' if missing else '.'))
 
     async def incoming(event):
         message = event.message
@@ -340,9 +544,21 @@ async def main():
             # Picture cards would hide the download progress or its failure.
             emit(status='Bot : ' + message.raw_text[:600])
 
+    def queue_results(keys):
+        items = []
+        for key in keys:
+            if key in inline_results and key not in requested:
+                requested.add(key)
+                query_id, result_id, label = inline_results[key]
+                items.append({'inline': (query_id, result_id), 'label': label})
+        if items:
+            emit(status=f'{len(items)} morceau(x) en file : le bot les prépare un par un, '
+                 'réception automatique.' if len(items) > 1 else
+                 f'Le bot prépare « {items[0]["label"]} »… Réception automatique dès qu’il est prêt.')
+            enqueue(items, items[0]['label'] if len(items) == 1 else 'Sélection')
+
     async def perform(cmd):
         nonlocal bot, request, expires, folder, client, sending
-        nonlocal watcher, watch_floor, watch_until, expected
         action = cmd.get('action')
         if action == 'connect':
             if client is None:
@@ -366,9 +582,25 @@ async def main():
             bot = await client.get_entity('DeezLoad2Bot')
             if not bot.bot or bot.username.lower() != 'deezload2bot':
                 raise ValueError('bot')
-            inline_results.clear()
             menus.clear()
             request = None
+            if text.startswith(('https://', 'http://')):
+                emit(buttons=[], status='Lecture du lien…')
+                try:
+                    playlist = await asyncio.wait_for(asyncio.to_thread(playlist_tracks, text), 180)
+                except Exception as error:
+                    emit(status=f'Playlist illisible ({type(error).__name__}) : lien public requis.')
+                    return
+                if playlist is not None:
+                    name, queries = playlist
+                    if not queries:
+                        emit(status=f'« {name} » ne contient aucun morceau lisible.')
+                        return
+                    emit(status=f'« {name} » : {len(queries)} morceaux à chercher et télécharger. '
+                         'Le bot les prépare un par un, ça peut prendre un moment.')
+                    enqueue([{'query': query, 'label': query} for query in queries], name)
+                    return
+            inline_results.clear()
             if not text.startswith(('https://', 'http://')):
                 # Answers in under a second and posts nothing, unlike sending the text
                 # to the bot, whose menu can take over a minute to come back.
@@ -393,19 +625,7 @@ async def main():
         elif action == 'click':
             key = cmd.get('key')
             if key in inline_results:
-                if key in requested:
-                    return
-                query_id, result_id, label = inline_results[key]
-                latest = await client.get_messages(bot, limit=1)
-                await client(functions.messages.SendInlineBotResultRequest(
-                    peer=bot, query_id=query_id, id=result_id))
-                requested.add(key)
-                emit(status=f'Le bot prépare « {label} »… Réception automatique dès qu’il est prêt.')
-                expected += 1
-                watch_until = time.monotonic() + BOT_PREPARE_SECONDS
-                if not watcher or watcher.done():
-                    watch_floor = latest[0].id if latest else 0
-                    watcher = asyncio.create_task(watch_for_audio())
+                queue_results([key])
                 return
             choice = menus.get(key)
             if not choice or not request or time.monotonic() >= expires:
@@ -428,6 +648,8 @@ async def main():
                 request = answer.id
             if getattr(answer, 'message', None):
                 emit(status='Bot : ' + answer.message[:600])
+        elif action == 'queue':
+            queue_results(cmd.get('keys') or [])
         elif action == 'receive':
             message = pending.pop(int(cmd['id']), None)
             if message:
@@ -486,7 +708,7 @@ async def main():
                 if operation and not operation.done():
                     operation.cancel()
                     await operation
-                stop_watching()
+                stop_queue()
                 request = None
                 pending.clear()
                 menus.clear()
@@ -508,7 +730,7 @@ async def main():
                     break
             elif operation and not operation.done():
                 # Requeue automatic files rather than lose album replies during transfer.
-                if action in ('receive', 'click', 'send'):
+                if action in ('receive', 'click', 'send', 'queue'):
                     await asyncio.sleep(.1)
                     await commands.put(cmd)
                 else:
@@ -517,7 +739,8 @@ async def main():
                 emit(busy=True)
                 operation = asyncio.create_task(guarded(cmd))
     finally:
-        stop_watching()
+        if runner and not runner.done():
+            runner.cancel()
         if operation and not operation.done():
             operation.cancel()
             await operation
