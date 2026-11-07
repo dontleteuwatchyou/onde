@@ -243,10 +243,28 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(link('https://www.deezer.com/track/3'))
         self.assertIsNone(link('https://test.example/autorise'))
 
-    def test_soundcloud_slug_becomes_a_search(self):
+    def test_soundcloud_slug_becomes_a_track(self):
         entry = {'url': 'https://soundcloud.com/sweet-medicine/sweet-medicine-w-odyssee-breezin'}
-        self.assertEqual(bridge.soundcloud_query(entry), 'sweet medicine w odyssee breezin')
-        self.assertEqual(bridge.soundcloud_query({'title': 'Titre', 'uploader': 'Moi'}), 'Moi Titre')
+        self.assertEqual(bridge.soundcloud_track(entry),
+                         {'artists': ['sweet medicine'], 'title': 'w odyssee breezin'})
+        self.assertEqual(bridge.soundcloud_track({'title': 'Titre', 'uploader': 'Moi'}),
+                         {'artists': ['Moi'], 'title': 'Titre'})
+
+    def test_searches_use_the_first_artist_then_the_title(self):
+        item = bridge.track(['Fuck Leeches', 'symbiose dona'], 'La dernière vague (feat. X) - Remastered 2020')
+        self.assertEqual(bridge.search_queries(item), [
+            ('Fuck Leeches La dernière vague', False), ('fuck leeches la derniere vague', False),
+            ('La dernière vague', True), ('la derniere vague', True)])
+        self.assertEqual(bridge.track_label(item),
+                         'Fuck Leeches, symbiose dona – La dernière vague (feat. X) - Remastered 2020')
+
+    def test_best_result_prefers_one_of_the_artists(self):
+        result = lambda title, description='': types.SimpleNamespace(id=title, title=title, description=description)
+        item = bridge.track(['Fuck Leeches', 'symbiose dona'], 'La dernière vague')
+        other, right = result('La dernière vague', 'Quelqu’un'), result('La dernière vague', 'Symbiose Dona')
+        self.assertIs(bridge.best_result([other, right], item, True), right)
+        self.assertIsNone(bridge.best_result([other], item, True))
+        self.assertIs(bridge.best_result([other], item, False), other)
 
     def test_explicit_lifecycle_and_reception(self):
         with tempfile.TemporaryDirectory() as tmp:

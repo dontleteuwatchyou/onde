@@ -242,6 +242,11 @@ impl Onde {
                                 |this, _, _, cx| this.go(Screen::Downloads, cx),
                             )))
                         })
+                        .when(!batch.active && failed > 0, |row| {
+                            row.child(btn("tg-batch-retry", format!("Réessayer les échecs ({failed})")).on_click(
+                                cx.listener(|this, _, _, cx| this.telegram_action("retry", cx)),
+                            ))
+                        })
                         .child(if batch.active {
                             btn("tg-batch-stop", "Arrêter")
                                 .on_click(cx.listener(|this, _, _, cx| this.stop_telegram_queue(cx)))
