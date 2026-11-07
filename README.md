@@ -9,6 +9,7 @@ Un lecteur de musique en Rust et GPUI, sans Electron : ta bibliothèque, ton ser
 [![Dernière version](https://img.shields.io/github/v/release/dontleteuwatchyou/onde?label=version&color=2f55a8)](https://github.com/dontleteuwatchyou/onde/releases/latest)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-58a6ff)](LICENSE)
 ![Linux x86_64](https://img.shields.io/badge/Linux-x86__64-2f55a8?logo=linux&logoColor=white)
+![Windows x86_64](https://img.shields.io/badge/Windows-x86__64-2f55a8)
 ![Rust](https://img.shields.io/badge/Rust-GPUI-dea584?logo=rust&logoColor=white)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-soutenir-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/forsakengh)
 
@@ -18,25 +19,37 @@ Un lecteur de musique en Rust et GPUI, sans Electron : ta bibliothèque, ton ser
 
 ## Installation
 
+Sous Linux :
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.sh | sh
 ```
 
-Le script télécharge la dernière version, vérifie sa somme de contrôle et installe Onde pour ton utilisateur, sans `sudo`. Onde apparaît aussi dans ton lanceur d'applications.
+Sous Windows, dans PowerShell :
 
-Lance ensuite la commande `onde`. Si elle est introuvable, ajoute `~/.local/bin` à ton `PATH`.
+```powershell
+irm https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.ps1 | iex
+```
+
+Le script télécharge la dernière version, vérifie sa somme de contrôle et installe Onde pour ton utilisateur, sans droits d'administrateur. Onde apparaît aussi dans ton lanceur d'applications ou ton menu Démarrer.
+
+Sous Linux, tu peux aussi lancer la commande `onde`. Si elle est introuvable, ajoute `~/.local/bin` à ton `PATH`.
 
 Onde se met ensuite à jour tout seul : il te prévient quand une version sort, et tu choisis quand l'installer. Tu peux aussi lancer `onde --update`, ou couper la vérification dans **Réglages → Mises à jour**. Les versions sont signées : une version sans signature valide est refusée.
 
-Pour désinstaller Onde (ta musique et tes réglages restent en place) :
+Pour désinstaller Onde sous Linux (ta musique et tes réglages restent en place) :
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.sh | sh -s -- --uninstall
 ```
 
+Sous Windows, télécharge `install.ps1` puis lance `powershell -File install.ps1 -Uninstall`.
+
 ### Ce qu'il faut sur ton système
 
-La version compilée vise Linux x86_64 et a été construite sous Arch Linux. Avec une glibc plus ancienne, compile depuis les sources.
+**Windows :** Windows 10 ou 11, x86_64. Pour YouTube et SoundCloud, ajoute `yt-dlp` et `ffmpeg`, par exemple avec `winget install yt-dlp.yt-dlp Gyan.FFmpeg`. L'analyse de qualité des FLAC demande `flac`.
+
+**Linux :** la version compilée vise Linux x86_64 et a été construite sous Arch Linux. Avec une glibc plus ancienne, compile depuis les sources.
 
 Sous Arch :
 
@@ -127,7 +140,7 @@ Discord doit être ouvert sur la même machine.
 
 ### Telegram
 
-Cette source facultative passe par ton compte Telegram et un bot tiers, @DeezLoad2Bot. Rien ne démarre tant que tu ne l'as pas acceptée dans Onde.
+Cette source facultative, réservée à Linux, passe par ton compte Telegram et un bot tiers, @DeezLoad2Bot. Rien ne démarre tant que tu ne l'as pas acceptée dans Onde.
 
 > [!WARNING]
 > Onde n'est pas lié à ce bot et ne vérifie pas les droits sur les fichiers qu'il renvoie. Ne demande que ce que tu as le droit de télécharger. Le bot reçoit tes recherches et les informations de profil exposées par Telegram. La session créée dans `~/.config/onde/telegram` donne accès à ton compte : ne la partage jamais.
@@ -183,7 +196,7 @@ Les images hébergées sont visibles par toute personne qui a leur lien.
 |---|---|
 | Linux, Wayland (Hyprland) | ✅ Utilisé au quotidien |
 | Linux, X11 | ❓ Pas testé |
-| Windows | ❌ Le code utilise des fonctions propres à Unix |
+| Windows 10 et 11 | 🧪 Compilé et testé par la CI, à confirmer à l'usage. Sans Telegram |
 | macOS | ❌ Pas pris en charge |
 
 ## Soutenir

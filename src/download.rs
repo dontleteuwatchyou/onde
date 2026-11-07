@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -102,9 +103,38 @@ impl YtDlp {
         command
             .arg("--ignore-config")
             .args(["--js-runtimes", "node"])
+            .env("PYTHONIOENCODING", "utf-8")
             .stdin(Stdio::null());
+        hide_console(&mut command);
         command
     }
+}
+
+/// Keeps a tool from flashing a console window under Windows.
+pub fn hide_console(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+/// Stops a tool and whatever it started, such as ffmpeg under yt-dlp.
+fn stop_tree(process: u32) {
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("taskkill");
+        command.args(["/T", "/F", "/PID", &process.to_string()]);
+        command
+    } else {
+        let mut command = Command::new("kill");
+        command.args(["-TERM", "--", &format!("-{process}")]);
+        command
+    };
+    hide_console(&mut command);
+    let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 fn missing_program(error: std::io::Error) -> anyhow::Error {
@@ -186,8 +216,8 @@ impl YtDlp {
         work: &Path,
         transfer: &Transfer,
     ) -> Result<Option<PathBuf>> {
-        let mut child = self
-            .command()
+        let mut command = self.command();
+        command
             // Onde has no Opus decoder: prefer what it can read as is.
             .args(["-f", "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"])
             .args(["-x", "--audio-format", "mp3>mp3/aac>m4a/m4a"])
@@ -212,9 +242,11 @@ impl YtDlp {
             .arg("--")
             .arg(&hit.reference)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Its own group, so cancelling also stops what it started (ffmpeg).
-            .process_group(0)
+            .stderr(Stdio::piped());
+        // Its own group, so cancelling also stops what it started (ffmpeg).
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(missing_program)?;
         let stdout = child.stdout.take().context("sortie de yt-dlp")?;
@@ -231,10 +263,7 @@ impl YtDlp {
             std::thread::spawn(move || {
                 while !finished.load(Ordering::Relaxed) {
                     if transfer.is_cancelled() {
-                        let _ = Command::new("kill")
-                            .args(["-TERM", "--", &format!("-{group}")])
-                            .stderr(Stdio::null())
-                            .status();
+                        stop_tree(group);
                         return;
                     }
                     std::thread::sleep(CANCEL_CHECK);
@@ -547,7 +576,7 @@ fn encode_path(path: &str) -> String {
     encoded
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -829,26 +829,28 @@ impl Onde {
                 .on_click(cx.listener(move |this, _, _, cx| this.select_source(index, cx))),
             );
         }
-        sources = sources.child(
-            row(
-                "source-telegram".into(),
-                "Telegram".to_owned(),
-                format!(
-                    "FLAC sans perte, MP3 320 ou 128 kb/s · réglé : {}",
-                    quality_name(state.telegram_quality.as_deref())
-                ),
-                state.telegram_selected,
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.downloads.telegram_selected = true;
-                this.downloads.request += 1;
-                this.downloads.searching = false;
-                this.downloads.hits.clear();
-                this.downloads.searched = false;
-                this.downloads.error = None;
-                cx.notify();
-            })),
-        );
+        if Telegram::SUPPORTED {
+            sources = sources.child(
+                row(
+                    "source-telegram".into(),
+                    "Telegram".to_owned(),
+                    format!(
+                        "FLAC sans perte, MP3 320 ou 128 kb/s · réglé : {}",
+                        quality_name(state.telegram_quality.as_deref())
+                    ),
+                    state.telegram_selected,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.downloads.telegram_selected = true;
+                    this.downloads.request += 1;
+                    this.downloads.searching = false;
+                    this.downloads.hits.clear();
+                    this.downloads.searched = false;
+                    this.downloads.error = None;
+                    cx.notify();
+                })),
+            );
+        }
         let folder_panel = div()
             .flex()
             .flex_col()
