@@ -31,6 +31,7 @@ pub(super) struct Downloads {
     telegram_received: usize,
     /// Results ticked for a group download, by bridge key.
     telegram_picked: Vec<String>,
+    telegram_quality: Option<String>,
     /// Last queue progress seen, to repaint every page when it moves.
     telegram_batch: crate::telegram::Batch,
     pub(super) telegram_batch_hidden: bool,
@@ -75,6 +76,7 @@ impl Downloads {
             telegram_delete: false,
             telegram_received: 0,
             telegram_picked: Vec::new(),
+            telegram_quality: config::load().telegram_quality,
             telegram_batch: Default::default(),
             telegram_batch_hidden: false,
             sources: download::sources(),
@@ -125,6 +127,20 @@ impl Onde {
                 self.downloads.telegram_batch_hidden = false;
             }
             self.downloads.telegram_batch = batch;
+            cx.notify();
+        }
+        let confirmed = self
+            .downloads
+            .telegram
+            .as_ref()
+            .and_then(|bridge| bridge.state.lock().unwrap().quality.clone());
+        if confirmed.is_some() && confirmed != self.downloads.telegram_quality {
+            self.downloads.telegram_quality = confirmed.clone();
+            let mut settings = config::load();
+            settings.telegram_quality = confirmed;
+            if let Err(error) = config::save(&settings) {
+                self.downloads.error = Some(format!("{error:#}").into());
+            }
             cx.notify();
         }
         if count > self.downloads.telegram_received {
@@ -367,6 +383,38 @@ impl Onde {
             })),
         );
         panel = panel.child(actions);
+        if state.connected {
+            let current = self.downloads.telegram_quality.clone();
+            let mut qualities = div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(div().text_color(pal().tx2).child("Qualité envoyée par le bot :"));
+            for (index, (value, label)) in
+                [("flac", "FLAC"), ("mp3_320", "MP3 320"), ("mp3_128", "MP3 128")].into_iter().enumerate()
+            {
+                qualities = qualities.child(
+                    chip(("tg-quality", index), label, current.as_deref() == Some(value)).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            if let Some(bridge) = &mut this.downloads.telegram
+                                && let Err(error) =
+                                    bridge.send(json!({"action": "quality", "value": value}))
+                            {
+                                this.downloads.error = Some(error.to_string().into());
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            panel = panel.child(qualities);
+            if current.is_none() {
+                panel = panel.child(div().text_color(pal().tx3).child(
+                    "Par défaut le bot envoie du MP3. Choisir FLAC passe par son menu /settings : réglé une fois, gardé pour les suivants.",
+                ));
+            }
+        }
         for file in state.files.iter().rev().take(3) {
             let name = std::path::Path::new(file).file_name().map_or(file.as_str(), |name| name.to_str().unwrap_or(file));
             panel = panel.child(format!("Reçu : {name}"));
@@ -785,7 +833,10 @@ impl Onde {
             row(
                 "source-telegram".into(),
                 "Telegram".to_owned(),
-                String::new(),
+                format!(
+                    "FLAC sans perte, MP3 320 ou 128 kb/s · réglé : {}",
+                    quality_name(state.telegram_quality.as_deref())
+                ),
                 state.telegram_selected,
             )
             .on_click(cx.listener(|this, _, _, cx| {
@@ -1075,5 +1126,14 @@ impl Onde {
                         )
                     }),
             )
+    }
+}
+
+fn quality_name(value: Option<&str>) -> &'static str {
+    match value {
+        Some("flac") => "FLAC",
+        Some("mp3_320") => "MP3 320",
+        Some("mp3_128") => "MP3 128",
+        _ => "MP3 par défaut",
     }
 }
