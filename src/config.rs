@@ -28,6 +28,8 @@ pub struct Config {
     /// Puts every cover of the library on a public host, ahead of time.
     pub host_covers: bool,
     pub shuffle: bool,
+    /// Never asks GitHub for a new version on its own.
+    pub no_update_check: bool,
 }
 
 fn path() -> Result<PathBuf> {

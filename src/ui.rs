@@ -8,6 +8,7 @@ mod playlists;
 mod quality;
 mod settings;
 mod setup;
+mod updates;
 mod widgets;
 
 use std::cell::{Cell, RefCell};
@@ -191,6 +192,8 @@ pub struct Onde {
     visible_tracks: Vec<usize>,
     visible_albums: Vec<usize>,
     visible_artists: Vec<usize>,
+    update: updates::UpdateState,
+    update_dismissed: bool,
     /// Being dragged to, as a fraction of the track.
     seek_drag: Option<f32>,
     volume_drag: bool,
@@ -283,6 +286,8 @@ impl Onde {
             visible_tracks: Vec::new(),
             visible_albums: Vec::new(),
             visible_artists: Vec::new(),
+            update: updates::UpdateState::default(),
+            update_dismissed: false,
             seek_drag: None,
             volume_drag: false,
             muted_volume: None,
@@ -319,6 +324,7 @@ impl Onde {
         }
         this.restart_presence();
         this.queue.shuffle = config::load().shuffle;
+        this.start_update_checks(cx);
         this
     }
 
@@ -907,6 +913,7 @@ impl Render for Onde {
                             .child(message),
                     )
                 })
+                .children(self.render_update_banner(cx))
                 .child(div().flex_1().min_h_0().flex().flex_col().child(page))
                 .into_any_element()
         };

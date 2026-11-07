@@ -6,7 +6,9 @@ set -eu
 
 REPO=dontleteuwatchyou/onde
 BIN_DIR=${ONDE_BIN_DIR:-$HOME/.local/bin}
-APP_DIR=${XDG_DATA_HOME:-$HOME/.local/share}/applications
+DATA_DIR=${XDG_DATA_HOME:-$HOME/.local/share}
+APP_DIR=$DATA_DIR/applications
+ICON_DIR=$DATA_DIR/icons/hicolor/scalable/apps
 
 fail() {
     echo "Erreur : $1" >&2
@@ -16,7 +18,7 @@ fail() {
 case "${1:-}" in
 "") ;;
 --uninstall)
-    rm -f "$BIN_DIR/onde" "$APP_DIR/onde.desktop"
+    rm -f "$BIN_DIR/onde" "$APP_DIR/onde.desktop" "$ICON_DIR/onde.svg"
     echo "Onde est retiré. Ta musique et tes réglages n'ont pas bougé."
     exit 0
     ;;
@@ -49,15 +51,21 @@ done
 sha256sum -c --quiet "$archive.sha256" || fail "l'archive est abîmée."
 tar xzf "$archive"
 
-mkdir -p "$BIN_DIR" "$APP_DIR"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 install -m755 "${archive%.tar.gz}/onde" "$BIN_DIR/onde"
+# Les archives d'avant la 0.1.2 n'ont pas d'icône : sans elle, Onde marche quand même.
+cp "${archive%.tar.gz}/onde.svg" "$ICON_DIR/onde.svg" 2>/dev/null ||
+    curl -fsSL -o "$ICON_DIR/onde.svg" "https://raw.githubusercontent.com/$REPO/master/assets/onde.svg" ||
+    echo "Icône non installée : Onde s'affichera sans dans le menu."
 cat >"$APP_DIR/onde.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Onde
 Comment=Lecteur de musique
+Icon=onde
 Exec=$BIN_DIR/onde
 Terminal=false
+StartupWMClass=onde
 Categories=AudioVideo;Audio;Player;
 DESKTOP
 
