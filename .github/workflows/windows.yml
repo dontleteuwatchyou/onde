@@ -1,0 +1,30 @@
+name: Windows
+
+# gpui compile ses shaders avec fxc : une version Windows ne se construit que sous Windows.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - run: Copy-Item target/release/onde.exe onde-windows-x86_64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onde-windows-x86_64
+          path: onde-windows-x86_64.exe
