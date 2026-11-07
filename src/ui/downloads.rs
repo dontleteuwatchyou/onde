@@ -8,6 +8,7 @@ use gpui::{ElementId, FontWeight, KeyDownEvent, rgb};
 
 use super::*;
 use crate::download::{self, DownloadSource, Hit, Transfer};
+use crate::theme::rad;
 
 enum JobState {
     Waiting,
@@ -217,7 +218,10 @@ impl Onde {
         let failed = batch.failed.len();
         let finished = batch.done + failed;
         let fraction = (finished as f32 / batch.total.max(1) as f32).clamp(0., 1.);
-        let mut summary = format!("Telegram · {} : {} / {} reçus", batch.name, batch.done, batch.total);
+        let mut summary = format!(
+            "Telegram · {} : {} / {} reçus",
+            batch.name, batch.done, batch.total
+        );
         if batch.present > 0 {
             summary.push_str(&format!(" · {} déjà présents", batch.present));
         }
@@ -241,7 +245,7 @@ impl Onde {
                 .mb_2()
                 .px_4()
                 .py_2()
-                .rounded(px(12.))
+                .rounded(rad(12.))
                 .bg(palette.rise)
                 .flex()
                 .flex_col()
@@ -254,38 +258,44 @@ impl Onde {
                         .gap_3()
                         .child(div().flex_1().min_w_0().truncate().child(summary))
                         .when(self.screen != Screen::Downloads, |row| {
-                            row.child(ghost("tg-batch-open", "Voir").on_click(cx.listener(
-                                |this, _, _, cx| this.go(Screen::Downloads, cx),
-                            )))
-                        })
-                        .when(!batch.active && failed > 0, |row| {
-                            row.child(btn("tg-batch-retry", format!("Réessayer les échecs ({failed})")).on_click(
-                                cx.listener(|this, _, _, cx| this.telegram_action("retry", cx)),
+                            row.child(ghost("tg-batch-open", "Voir").on_click(
+                                cx.listener(|this, _, _, cx| this.go(Screen::Downloads, cx)),
                             ))
                         })
+                        .when(!batch.active && failed > 0, |row| {
+                            row.child(
+                                btn("tg-batch-retry", format!("Réessayer les échecs ({failed})"))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.telegram_action("retry", cx)
+                                    })),
+                            )
+                        })
                         .child(if batch.active {
-                            btn("tg-batch-stop", "Arrêter")
-                                .on_click(cx.listener(|this, _, _, cx| this.stop_telegram_queue(cx)))
+                            btn("tg-batch-stop", "Arrêter").on_click(
+                                cx.listener(|this, _, _, cx| this.stop_telegram_queue(cx)),
+                            )
                         } else {
-                            btn("tg-batch-close", "Fermer").on_click(cx.listener(|this, _, _, cx| {
-                                this.downloads.telegram_batch_hidden = true;
-                                cx.notify();
-                            }))
+                            btn("tg-batch-close", "Fermer").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.downloads.telegram_batch_hidden = true;
+                                    cx.notify();
+                                },
+                            ))
                         }),
                 )
                 .child(
                     div()
                         .h(px(4.))
                         .w_full()
-                        .rounded(px(2.))
+                        .rounded(rad(2.))
                         .bg(palette.rise2)
-                        .child(
-                            div()
-                                .h_full()
-                                .w(relative(fraction))
-                                .rounded(px(2.))
-                                .bg(if failed > 0 && !batch.active { ERROR } else { palette.spark }),
-                        ),
+                        .child(div().h_full().w(relative(fraction)).rounded(rad(2.)).bg(
+                            if failed > 0 && !batch.active {
+                                ERROR
+                            } else {
+                                palette.spark
+                            },
+                        )),
                 )
                 .child(
                     div()
@@ -304,9 +314,26 @@ impl Onde {
             .as_ref()
             .map(|bridge| bridge.state.lock().unwrap().clone())
             .unwrap_or_default();
-        let mut panel = div().id("telegram-panel").max_h(px(440.)).overflow_y_scroll().flex_shrink_0().flex().flex_col().gap_2().p_3().bg(pal().deep).text_sm()
+        let mut panel = div()
+            .id("telegram-panel")
+            .max_h(px(440.))
+            .overflow_y_scroll()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .bg(pal().deep)
+            .text_sm()
             .child("Telegram · @DeezLoad2Bot")
-            .child(format!("État : {}", if state.status.is_empty() { "Désactivé" } else { &state.status }));
+            .child(format!(
+                "État : {}",
+                if state.status.is_empty() {
+                    "Désactivé"
+                } else {
+                    &state.status
+                }
+            ));
         if !self.downloads.telegram_consent {
             return panel
                 .child("Session locale donnant accès au compte Telegram. Le bot tiers reçoit vos recherches, liens et informations de profil exposées par Telegram. Conditions du bot et droits du catalogue non vérifiés : n’envoyez que des demandes que vous êtes autorisé à télécharger. Aucun code ni mot de passe 2FA demandé.")
@@ -385,27 +412,34 @@ impl Onde {
         panel = panel.child(actions);
         if state.connected {
             let current = self.downloads.telegram_quality.clone();
-            let mut qualities = div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(div().text_color(pal().tx2).child("Qualité envoyée par le bot :"));
-            for (index, (value, label)) in
-                [("flac", "FLAC"), ("mp3_320", "MP3 320"), ("mp3_128", "MP3 128")].into_iter().enumerate()
+            let mut qualities = div().flex().flex_wrap().items_center().gap_2().child(
+                div()
+                    .text_color(pal().tx2)
+                    .child("Qualité envoyée par le bot :"),
+            );
+            for (index, (value, label)) in [
+                ("flac", "FLAC"),
+                ("mp3_320", "MP3 320"),
+                ("mp3_128", "MP3 128"),
+            ]
+            .into_iter()
+            .enumerate()
             {
                 qualities = qualities.child(
-                    chip(("tg-quality", index), label, current.as_deref() == Some(value)).on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            if let Some(bridge) = &mut this.downloads.telegram
-                                && let Err(error) =
-                                    bridge.send(json!({"action": "quality", "value": value}))
-                            {
-                                this.downloads.error = Some(error.to_string().into());
-                            }
-                            cx.notify();
-                        }),
-                    ),
+                    chip(
+                        ("tg-quality", index),
+                        label,
+                        current.as_deref() == Some(value),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(bridge) = &mut this.downloads.telegram
+                            && let Err(error) =
+                                bridge.send(json!({"action": "quality", "value": value}))
+                        {
+                            this.downloads.error = Some(error.to_string().into());
+                        }
+                        cx.notify();
+                    })),
                 );
             }
             panel = panel.child(qualities);
@@ -416,7 +450,9 @@ impl Onde {
             }
         }
         for file in state.files.iter().rev().take(3) {
-            let name = std::path::Path::new(file).file_name().map_or(file.as_str(), |name| name.to_str().unwrap_or(file));
+            let name = std::path::Path::new(file)
+                .file_name()
+                .map_or(file.as_str(), |name| name.to_str().unwrap_or(file));
             panel = panel.child(format!("Reçu : {name}"));
         }
         let picked: Vec<String> = state
@@ -425,9 +461,16 @@ impl Onde {
             .filter(|choice| self.downloads.telegram_picked.contains(&choice.key))
             .map(|choice| choice.key.clone())
             .collect();
-        let selectable = state.buttons.iter().any(|choice| choice.key.starts_with("inline:"));
+        let selectable = state
+            .buttons
+            .iter()
+            .any(|choice| choice.key.starts_with("inline:"));
         if selectable {
-            let all: Vec<String> = state.buttons.iter().map(|choice| choice.key.clone()).collect();
+            let all: Vec<String> = state
+                .buttons
+                .iter()
+                .map(|choice| choice.key.clone())
+                .collect();
             let count = picked.len();
             panel = panel.child(
                 div()
@@ -436,18 +479,17 @@ impl Onde {
                     .items_center()
                     .gap_2()
                     .child(
-                        div()
-                            .text_color(pal().tx2)
-                            .child("Clique sur un titre pour le télécharger, ou coche-en plusieurs."),
+                        div().text_color(pal().tx2).child(
+                            "Clique sur un titre pour le télécharger, ou coche-en plusieurs.",
+                        ),
                     )
                     .when(count > 0, |bar| {
                         bar.child(
-                            btn("tg-queue", format!("Télécharger la sélection ({count})")).on_click(
-                                cx.listener(move |this, _, _, cx| {
+                            btn("tg-queue", format!("Télécharger la sélection ({count})"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     let keys = std::mem::take(&mut this.downloads.telegram_picked);
                                     this.telegram_queue(keys, cx);
-                                }),
-                            ),
+                                })),
                         )
                         .child(ghost("tg-unpick", "Vider").on_click(cx.listener(
                             |this, _, _, cx| {
@@ -516,7 +558,7 @@ impl Onde {
                             .id(("tg-pick", index))
                             .flex_none()
                             .size(px(20.))
-                            .rounded(px(5.))
+                            .rounded(rad(5.))
                             .border_1()
                             .border_color(if ticked { pal().spark } else { pal().tx3 })
                             .when(ticked, |tick| tick.bg(pal().spark))
@@ -646,9 +688,10 @@ impl Onde {
     pub(super) fn search(&mut self, cx: &mut Context<Self>) {
         if self.downloads.telegram_selected {
             // A stopped bridge is restarted by telegram_action instead of being a dead end.
-            let usable = self.downloads.telegram.as_mut().is_none_or(|bridge| {
-                !bridge.is_alive() || bridge.state.lock().unwrap().connected
-            });
+            let usable =
+                self.downloads.telegram.as_mut().is_none_or(|bridge| {
+                    !bridge.is_alive() || bridge.state.lock().unwrap().connected
+                });
             if self.downloads.telegram_consent && usable {
                 self.telegram_action("send", cx);
             } else {
@@ -807,7 +850,7 @@ impl Onde {
                 .flex_col()
                 .px_3()
                 .py_2()
-                .rounded(px(10.))
+                .rounded(rad(10.))
                 .cursor_pointer()
                 .when(selected, |row| row.bg(palette.rise2))
                 .when(!selected, |row| row.hover(|row| row.bg(pal().rise)))
@@ -851,32 +894,34 @@ impl Onde {
                 })),
             );
         }
-        let folder_panel = div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .pt_4()
-            .child(mono("DOSSIER").text_color(palette.tx3))
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.tx2)
-                    .child(state.folder.display().to_string()),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .when(!self.shows_downloads_folder(), |actions| {
-                        actions.child(ghost("open-downloads", "Ouvrir").on_click(
-                            cx.listener(|this, _, _, cx| this.open_downloads_folder(cx)),
-                        ))
-                    })
-                    .child(ghost("download-folder", "Changer").on_click(
-                        cx.listener(|this, _, _, cx| this.pick_music_folder(cx)),
-                    )),
-            );
+        let folder_panel =
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .pt_4()
+                .child(mono("DOSSIER").text_color(palette.tx3))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(palette.tx2)
+                        .child(state.folder.display().to_string()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .when(!self.shows_downloads_folder(), |actions| {
+                            actions.child(ghost("open-downloads", "Ouvrir").on_click(
+                                cx.listener(|this, _, _, cx| this.open_downloads_folder(cx)),
+                            ))
+                        })
+                        .child(
+                            ghost("download-folder", "Changer")
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_music_folder(cx))),
+                        ),
+                );
 
         let field = div()
             .flex()
@@ -885,7 +930,7 @@ impl Onde {
             .gap_2()
             .h(px(44.))
             .px_4()
-            .rounded(px(10.))
+            .rounded(rad(10.))
             .bg(palette.rise)
             .border_1()
             .border_color(palette.tide)
@@ -902,15 +947,13 @@ impl Onde {
                     .min_w_0()
                     .child(div().truncate().child(format!("{}▏", state.query)))
                     .when(state.query.is_empty(), |line| {
-                        line.child(
-                            div()
-                                .text_color(palette.tx3)
-                                .child(if state.telegram_selected {
-                                    "Titre, artiste ou lien de playlist Spotify, Deezer, SoundCloud"
-                                } else {
-                                    "Tape un titre ou un artiste, puis Entrée"
-                                }),
-                        )
+                        line.child(div().text_color(palette.tx3).child(
+                            if state.telegram_selected {
+                                "Titre, artiste ou lien de playlist Spotify, Deezer, SoundCloud"
+                            } else {
+                                "Tape un titre ou un artiste, puis Entrée"
+                            },
+                        ))
                     }),
             );
 
@@ -924,7 +967,7 @@ impl Onde {
                     .w_full()
                     .h(px(48.))
                     .px_2()
-                    .rounded(px(10.))
+                    .rounded(rad(10.))
                     .hover(|row| row.bg(pal().rise))
                     .child(
                         div()
@@ -1006,23 +1049,23 @@ impl Onde {
                                     .child(job.hit.title.clone()),
                             )
                             .when(cancellable, |row| {
-                                row.child(
-                                    icon_small(("cancel", index), "close").on_click(cx.listener(
-                                        move |this, _, _, cx| this.cancel_download(index, cx),
-                                    )),
-                                )
+                                row.child(icon_small(("cancel", index), "close").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.cancel_download(index, cx)
+                                    }),
+                                ))
                             }),
                     )
                     .child(
                         div()
                             .h(px(4.))
                             .w_full()
-                            .rounded(px(2.))
+                            .rounded(rad(2.))
                             .bg(palette.rise2)
                             .child(
                                 div()
                                     .h_full()
-                                    .rounded(px(2.))
+                                    .rounded(rad(2.))
                                     .w(relative(fraction as f32))
                                     .bg(tint),
                             ),
@@ -1046,7 +1089,12 @@ impl Onde {
                 panel.child(div().text_size(px(13.)).text_color(ERROR).child(error))
             })
             .when_some(status, |panel, status| {
-                panel.child(div().text_size(px(13.)).text_color(palette.tx2).child(status))
+                panel.child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(palette.tx2)
+                        .child(status),
+                )
             })
             .child(
                 div()
@@ -1109,7 +1157,7 @@ impl Onde {
                                 .w(px(320.))
                                 .flex_none()
                                 .p_4()
-                                .rounded(px(16.))
+                                .rounded(rad(16.))
                                 .bg(palette.rise)
                                 .overflow_y_scroll()
                                 .flex()

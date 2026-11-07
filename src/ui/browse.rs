@@ -8,12 +8,12 @@ use gpui::{Div, FontWeight, Stateful, linear_color_stop, linear_gradient};
 use super::*;
 use crate::catalog::matching_tracks;
 use crate::collections::track_id;
+use crate::theme::rad;
 use crate::theme::{alpha, mix};
 use crate::visuals::paint_corners;
 
 const CARD_MIN: f32 = 160.;
 const CARD_GAP: f32 = 16.;
-const PAGE_PADDING: f32 = 32.;
 const ROW_HEIGHT: f32 = 44.;
 const CARD_TEXT: f32 = 76.;
 const QUEUE_WIDTH: f32 = 388.;
@@ -49,7 +49,9 @@ impl Onde {
 
     pub(super) fn content_width(&self, window: &Window) -> f32 {
         let queue = if self.show_queue { QUEUE_WIDTH } else { 0. };
-        f32::from(window.viewport_size().width) - queue - PAGE_PADDING * 2.
+        // The pages are padded by two spacing units on each side.
+        let padding = crate::theme::look().density * 2.;
+        f32::from(window.viewport_size().width) - queue - self.side_width(window) - padding * 2.
     }
 
     /// How many cards fit in a row, and how wide each is.
@@ -79,7 +81,7 @@ impl Onde {
             .flex_col()
             .gap_1()
             .p_2()
-            .rounded(px(16.))
+            .rounded(rad(16.))
             .cursor_pointer()
             .when(playing, |card| card.border_1().border_color(palette.spark))
             .hover(|card| card.bg(pal().rise))
@@ -174,7 +176,7 @@ impl Onde {
     fn hero(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         const HEIGHT: f32 = 340.;
         let palette = pal();
-        let width = f32::from(window.viewport_size().width);
+        let width = self.content_width(window);
         let featured = self
             .queue
             .current_track()
@@ -242,9 +244,9 @@ impl Onde {
                 );
         }
         if let Some(key) = featured.filter(|_| !empty) {
-            buttons = buttons.child(ghost("hero-album", "Voir l’album").on_click(cx.listener(
-                move |this, _, _, cx| this.go(Screen::Album(key.clone()), cx),
-            )));
+            buttons = buttons.child(ghost("hero-album", "Voir l’album").on_click(
+                cx.listener(move |this, _, _, cx| this.go(Screen::Album(key.clone()), cx)),
+            ));
         }
 
         self.stage(art.clone(), HEIGHT)
@@ -318,7 +320,13 @@ impl Onde {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let hero = self.hero(window, cx);
+        let courant = crate::theme::look().layout == crate::theme::Layout::Courant
+            && self.queue.current_track().is_some();
+        let hero = if courant {
+            self.render_current(window, cx)
+        } else {
+            self.hero(window, cx)
+        };
         let resume = self.resume_albums();
         let (columns, _) = self.card_layout(window);
         let recent = self.catalog.recent_albums(columns);
@@ -370,7 +378,7 @@ impl Onde {
             .items_center()
             .gap_3()
             .px_2()
-            .rounded(px(10.))
+            .rounded(rad(10.))
             .cursor_pointer()
             .when(is_current, |row| row.bg(palette.rise))
             .hover(|row| row.bg(pal().rise))
@@ -395,7 +403,11 @@ impl Onde {
                     .min_w_0()
                     .truncate()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(if is_current { palette.spark } else { palette.tx })
+                    .text_color(if is_current {
+                        palette.spark
+                    } else {
+                        palette.tx
+                    })
                     .child(track.title.clone()),
             )
             .child(
@@ -419,10 +431,15 @@ impl Onde {
                 )
             })
             .when(wide, |row| {
-                row.child(div().w(px(150.)).flex_none().flex().when(
-                    !track.format.is_empty(),
-                    |cell| cell.child(tag(track.format.clone())),
-                ))
+                row.child(
+                    div()
+                        .w(px(150.))
+                        .flex_none()
+                        .flex()
+                        .when(!track.format.is_empty(), |cell| {
+                            cell.child(tag(track.format.clone()))
+                        }),
+                )
             })
             .child(
                 mono(format_time(track.duration))
@@ -431,23 +448,19 @@ impl Onde {
                     .text_color(palette.tx3),
             )
             .child(
-                icon_small(
-                    ("like", index),
-                    if liked { "heart-fill" } else { "heart" },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_like(index, cx);
-                })),
-            )
-            .child(
-                icon_small(("add", index), "listplus").on_click(cx.listener(
-                    move |this, _, _, cx| {
+                icon_small(("like", index), if liked { "heart-fill" } else { "heart" }).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.open_add_menu(index, cx);
-                    },
-                )),
+                        this.toggle_like(index, cx);
+                    }),
+                ),
             )
+            .child(icon_small(("add", index), "listplus").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.open_add_menu(index, cx);
+                },
+            )))
             .when(wide, |row| {
                 row.child(
                     icon_small(("verify", index), "sliders").on_click(cx.listener(
@@ -524,8 +537,11 @@ impl Onde {
                     .map(|row| {
                         let artist = &this.catalog.artists[this.visible_artists[row]];
                         let name = artist.name.clone();
-                        let detail =
-                            format!("{} albums · {} morceaux", artist.albums.len(), artist.tracks);
+                        let detail = format!(
+                            "{} albums · {} morceaux",
+                            artist.albums.len(),
+                            artist.tracks
+                        );
                         div()
                             .id(("artist", row))
                             .w_full()
@@ -534,7 +550,7 @@ impl Onde {
                             .items_center()
                             .justify_between()
                             .px_2()
-                            .rounded(px(10.))
+                            .rounded(rad(10.))
                             .cursor_pointer()
                             .hover(|row| row.bg(pal().rise))
                             .child(
@@ -598,7 +614,7 @@ impl Onde {
             .items_center()
             .gap_2()
             .px_3()
-            .rounded(px(10.))
+            .rounded(rad(10.))
             .bg(palette.rise)
             .border_1()
             .border_color(if typing { palette.tide } else { palette.line })
@@ -667,7 +683,12 @@ impl Onde {
                     .flex_wrap()
                     .items_center()
                     .gap_2()
-                    .child(view_chip("view-tracks", "Morceaux", LibraryView::Tracks, cx))
+                    .child(view_chip(
+                        "view-tracks",
+                        "Morceaux",
+                        LibraryView::Tracks,
+                        cx,
+                    ))
                     .child(view_chip("view-albums", "Albums", LibraryView::Albums, cx))
                     .child(view_chip(
                         "view-artists",
@@ -711,7 +732,7 @@ impl Onde {
         );
         let meta = format!("{} morceaux · {}", tracks.len(), format_time(album.seconds));
         let art = self.art(key, cx);
-        let width = f32::from(window.viewport_size().width);
+        let width = self.content_width(window);
         let side = (width * 0.2).clamp(140., 240.);
         let accent = art.as_ref().map_or(palette.tide, |art| art.accent);
         let first = tracks.first().copied();
@@ -761,13 +782,11 @@ impl Onde {
                             )
                             .child(mono(meta).text_color(palette.tx2))
                             .when_some(first, |text, first| {
-                                text.child(
-                                    div().flex().pt_2().child(
-                                        primary("album-play", "Écouter").on_click(cx.listener(
-                                            move |this, _, _, cx| this.start(first, cx),
-                                        )),
+                                text.child(div().flex().pt_2().child(
+                                    primary("album-play", "Écouter").on_click(
+                                        cx.listener(move |this, _, _, cx| this.start(first, cx)),
                                     ),
-                                )
+                                ))
                             }),
                     ),
             )
@@ -814,7 +833,7 @@ impl Onde {
         let title = artist.name.clone();
         let albums = artist.albums.clone();
         let meta = format!("{} albums · {} morceaux", albums.len(), artist.tracks);
-        let width = f32::from(window.viewport_size().width);
+        let width = self.content_width(window);
         let grid = self.album_grid("artist-albums", albums, window, cx);
         div()
             .flex_1()

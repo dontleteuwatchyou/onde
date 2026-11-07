@@ -215,7 +215,11 @@ impl Analyzer {
                 total += (targets[band] - previous[band]).max(0.0);
                 count += 1;
             }
-            if count == 0 { 0.0 } else { total / count as f32 }
+            if count == 0 {
+                0.0
+            } else {
+                total / count as f32
+            }
         };
         let kick = rise(&mut (0..self.kick_bands), &self.previous);
         let snare = rise(&mut self.snare_bands.iter().copied(), &self.previous);
@@ -421,7 +425,11 @@ mod tests {
             let on = beat % 15 < 2;
             for _ in 0..per_update {
                 let t = i as f32 / RATE as f32;
-                let value = if on { (t * 60.0 * std::f32::consts::TAU).sin() * 0.7 } else { 0.0 };
+                let value = if on {
+                    (t * 60.0 * std::f32::consts::TAU).sin() * 0.7
+                } else {
+                    0.0
+                };
                 analyzer.push(value);
                 i += 1;
             }

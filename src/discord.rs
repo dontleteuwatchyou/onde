@@ -149,9 +149,7 @@ fn run(
     let mut last_sent: Option<Instant> = None;
     loop {
         let wait = match last_sent {
-            Some(sent) if pending && stream.is_some() => {
-                MINIMUM_GAP.saturating_sub(sent.elapsed())
-            }
+            Some(sent) if pending && stream.is_some() => MINIMUM_GAP.saturating_sub(sent.elapsed()),
             Some(sent) => RETRY.saturating_sub(sent.elapsed()),
             None if pending => Duration::ZERO,
             None => RETRY,
@@ -170,7 +168,11 @@ fn run(
                     links.insert(key.clone(), url.clone());
                 }
                 covers.insert(key.clone(), cover);
-                if found && wanted.as_ref().is_some_and(|(activity, _)| activity.cover_key == key) {
+                if found
+                    && wanted
+                        .as_ref()
+                        .is_some_and(|(activity, _)| activity.cover_key == key)
+                {
                     pending = true;
                 }
                 continue;
@@ -304,7 +306,11 @@ fn open(path: &Path) -> Option<Stream> {
 /// only hold this thread, never playback.
 #[cfg(windows)]
 fn open(path: &Path) -> Option<Stream> {
-    std::fs::OpenOptions::new().read(true).write(true).open(path).ok()
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .ok()
 }
 
 fn write_frame(stream: &mut Stream, op: u32, payload: &Value) -> Result<()> {
@@ -410,7 +416,11 @@ mod tests {
         let mut unknown = activity();
         unknown.duration = 0.0;
         let payload = set_activity(Some(&unknown), None, 1_000_000);
-        assert!(payload["args"]["activity"]["timestamps"].get("end").is_none());
+        assert!(
+            payload["args"]["activity"]["timestamps"]
+                .get("end")
+                .is_none()
+        );
     }
 
     #[test]
@@ -446,10 +456,8 @@ mod tests {
     fn fake_discord(reply_op: u32) -> (Folder, PathBuf, Receiver<Value>) {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let folder = std::env::temp_dir().join(format!(
-            "onde-discord-{}-{number}",
-            std::process::id()
-        ));
+        let folder =
+            std::env::temp_dir().join(format!("onde-discord-{}-{number}", std::process::id()));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join("discord-ipc-0");
         let listener = UnixListener::bind(&path).unwrap();
@@ -485,7 +493,15 @@ mod tests {
         sender.send(Message::Show(Some(activity()), None)).unwrap();
         let answers = sender.clone();
         std::thread::spawn(move || {
-            run("42", &[path], &receiver, &answers, no_cover, &Links::in_memory(), &shared);
+            run(
+                "42",
+                &[path],
+                &receiver,
+                &answers,
+                no_cover,
+                &Links::in_memory(),
+                &shared,
+            );
         });
         let wait = Duration::from_secs(5);
         assert_eq!(frames.recv_timeout(wait).unwrap()["client_id"], "42");
@@ -519,7 +535,15 @@ mod tests {
         let status = Arc::new(Mutex::new(Status::Searching));
         let answers = sender.clone();
         std::thread::spawn(move || {
-            run("42", &[path], &receiver, &answers, some_cover, &Links::in_memory(), &status);
+            run(
+                "42",
+                &[path],
+                &receiver,
+                &answers,
+                some_cover,
+                &Links::in_memory(),
+                &status,
+            );
         });
         sender.send(Message::Show(Some(activity()), None)).unwrap();
         wait_for(&frames, |frame| {
@@ -553,12 +577,23 @@ mod tests {
         let answers = sender.clone();
         sender.send(Message::Show(Some(activity()), None)).unwrap();
         std::thread::spawn(move || {
-            run("42", &[path], &receiver, &answers, must_not_search, &links, &status);
+            run(
+                "42",
+                &[path],
+                &receiver,
+                &answers,
+                must_not_search,
+                &links,
+                &status,
+            );
         });
         let wait = Duration::from_secs(5);
         frames.recv_timeout(wait).unwrap();
         let first = frames.recv_timeout(wait).unwrap();
-        assert_eq!(first["args"]["activity"]["assets"]["large_image"], "https://hote/a.jpg");
+        assert_eq!(
+            first["args"]["activity"]["assets"]["large_image"],
+            "https://hote/a.jpg"
+        );
     }
 
     #[test]

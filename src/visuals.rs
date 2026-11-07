@@ -126,7 +126,8 @@ impl Default for VisualState {
 
 /// The same numbers every time, so nothing flickers without reason.
 fn hash(n: u32, s: u32) -> f32 {
-    let mut x = n.wrapping_add(1).wrapping_mul(2_654_435_761) ^ s.wrapping_add(7).wrapping_mul(40_503);
+    let mut x =
+        n.wrapping_add(1).wrapping_mul(2_654_435_761) ^ s.wrapping_add(7).wrapping_mul(40_503);
     x ^= x >> 13;
     x = x.wrapping_mul(1_274_126_177);
     (x ^ (x >> 16)) as f32 / 4_294_967_296.0
@@ -168,7 +169,14 @@ impl Canvas<'_> {
     }
 
     fn disc(&mut self, x: f32, y: f32, radius: f32, color: Rgba) {
-        self.rounded(x - radius, y - radius, radius * 2.0, radius * 2.0, radius, color);
+        self.rounded(
+            x - radius,
+            y - radius,
+            radius * 2.0,
+            radius * 2.0,
+            radius,
+            color,
+        );
     }
 
     fn glow(&mut self, x: f32, y: f32, radius: f32, blur: f32, color: Rgba) {
@@ -205,11 +213,7 @@ impl Canvas<'_> {
         if let Some(path) = self.build(points) {
             self.window.paint_path(
                 path,
-                linear_gradient(
-                    180.,
-                    linear_color_stop(from, 0.),
-                    linear_color_stop(to, 1.),
-                ),
+                linear_gradient(180., linear_color_stop(from, 0.), linear_color_stop(to, 1.)),
             );
         }
     }
@@ -277,7 +281,14 @@ pub fn paint(
     window.with_content_mask(Some(ContentMask { bounds }), |window| {
         let mut canvas = Canvas { window, x, y };
         canvas.background(w, h, palette);
-        let frame = Frame { w, h, dt, sound, palette, hits };
+        let frame = Frame {
+            w,
+            h,
+            dt,
+            sound,
+            palette,
+            hits,
+        };
         match visual {
             Visual::Maree => maree(&mut canvas, &frame, state),
             Visual::Ricochets => ricochets(&mut canvas, &frame, state),
@@ -319,18 +330,39 @@ fn maree(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let twinkle = hash(i, (t * 6.0) as u32 + 1);
         let size = 1.5 + 2.5 * hash(i, 1);
         let shade = alpha(p.tx, (0.12 + 0.75 * high * twinkle) * (1.0 - 0.55 * l));
-        c.rounded(hash(i, 2) * w, hash(i, 3) * horizon * 0.92, size, size, size, shade);
+        c.rounded(
+            hash(i, 2) * w,
+            hash(i, 3) * horizon * 0.92,
+            size,
+            size,
+            size,
+            shade,
+        );
     }
 
     let sun_x = w * lerp(0.62, 0.78, l);
     let sun_y = horizon - m * 0.1;
     let sun_r = m * (0.12 + 0.04 * bass);
-    c.glow(sun_x, sun_y, sun_r, 24.0 + 130.0 * bass, alpha(p.spark, 0.5 + 0.5 * bass));
-    c.disc(sun_x, sun_y, sun_r * 1.34, alpha(p.spark, 0.16 + 0.2 * bass));
+    c.glow(
+        sun_x,
+        sun_y,
+        sun_r,
+        24.0 + 130.0 * bass,
+        alpha(p.spark, 0.5 + 0.5 * bass),
+    );
+    c.disc(
+        sun_x,
+        sun_y,
+        sun_r * 1.34,
+        alpha(p.spark, 0.16 + 0.2 * bass),
+    );
     c.disc(sun_x, sun_y, sun_r, p.spark);
 
     if f.hits.kick {
-        s.swells.push(Swell { x: -0.1, strength: 0.55 + 0.45 * a.energy().min(1.0) });
+        s.swells.push(Swell {
+            x: -0.1,
+            strength: 0.55 + 0.45 * a.energy().min(1.0),
+        });
         if s.swells.len() > 6 {
             s.swells.remove(0);
         }
@@ -348,7 +380,8 @@ fn maree(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let d = layer as f32 / 7.0;
         let base = horizon + (h - horizon) * d.powf(1.25) * 0.82;
         let band = lerp(38.0, 2.0, d) as usize;
-        let amp = (3.0 + m * 0.006 * (1.0 - d * 0.3) + m * (0.012 + 0.075 * d) * b[band]) * (1.0 - 0.45 * l);
+        let amp = (3.0 + m * 0.006 * (1.0 - d * 0.3) + m * (0.012 + 0.075 * d) * b[band])
+            * (1.0 - 0.45 * l);
         let f1 = lerp(0.021, 0.0052, d);
         let f2 = f1 * 2.3;
         let speed = lerp(1.3, 0.7, d);
@@ -359,8 +392,9 @@ fn maree(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
             let x = u * w;
             let phase = layer as f32;
             let mut y = base
-                - amp * ((x * f1 + t * speed + phase * 1.7).sin()
-                    + 0.45 * (x * f2 - t * speed * 0.7 + phase).sin());
+                - amp
+                    * ((x * f1 + t * speed + phase * 1.7).sin()
+                        + 0.45 * (x * f2 - t * speed * 0.7 + phase).sin());
             for swell in &s.swells {
                 let z = (u - swell.x) / 0.11;
                 y -= swell.strength * m * 0.07 * d * d * (-0.5 * z * z).exp() * act;
@@ -384,7 +418,10 @@ fn maree(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
                 let wobble = 0.5 + 0.5 * (i as f32 * 0.45 + t * 2.0 + layer as f32).sin();
                 points.push((i as f32 / WAVE_SEGMENTS as f32 * w, y + thick * wobble));
             }
-            c.shape(&points, alpha(p.tx, (0.16 + 0.5 * high * d) * (1.0 - 0.4 * l)));
+            c.shape(
+                &points,
+                alpha(p.tx, (0.16 + 0.5 * high * d) * (1.0 - 0.4 * l)),
+            );
         }
         if layer == 1 {
             for j in 0..14 {
@@ -430,7 +467,14 @@ fn maree(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         drop.vy += 420.0 * step;
         drop.life -= step * 0.9;
         let size = 2.0 + 3.0 * drop.life;
-        c.rounded(drop.x, drop.y, size, size * 1.6, size, alpha(p.tx, drop.life * 0.85 * (1.0 - 0.5 * l)));
+        c.rounded(
+            drop.x,
+            drop.y,
+            size,
+            size * 1.6,
+            size,
+            alpha(p.tx, drop.life * 0.85 * (1.0 - 0.5 * l)),
+        );
     }
     s.spray.retain(|drop| drop.life > 0.0);
 }
@@ -487,10 +531,14 @@ fn ricochets(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
             for ring in &s.rings {
                 let (dx, dy) = (cx - ring.x, cy - ring.y);
                 let d = (dx * dx + dy * dy).sqrt() - ring.radius;
-                value += ring.strength * ring.life * (-(d * d) / (2.0 * sigma * sigma)).exp() * (d * 0.05).cos();
+                value += ring.strength
+                    * ring.life
+                    * (-(d * d) / (2.0 * sigma * sigma)).exp()
+                    * (d * 0.05).cos();
             }
             let height = value.clamp(-0.5, 1.3);
-            let scale = (0.1 + 0.05 * (cx * 0.01 + cy * 0.013 + t).sin() + 0.62 * height.max(0.0)).clamp(0.06, 1.05);
+            let scale = (0.1 + 0.05 * (cx * 0.01 + cy * 0.013 + t).sin() + 0.62 * height.max(0.0))
+                .clamp(0.06, 1.05);
             let dot = cell_w.min(cell_h) * scale;
             let drop = (-height).max(0.0) * 6.0;
             let zone = lerp(1.0, 0.12 + 0.88 * smooth((cx / w - 0.42) / 0.28), l);
@@ -520,11 +568,20 @@ fn ricochets(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
             let r = (ring.radius + ring.radius * 0.06 * bump(k) * ring.life).max(0.0);
             points.push((ring.x + angle.cos() * r, ring.y + angle.sin() * r));
         }
-        c.shape(&points, alpha(p.tx, ring.life * ring.life * 0.7 * (1.0 - 0.35 * l)));
+        c.shape(
+            &points,
+            alpha(p.tx, ring.life * ring.life * 0.7 * (1.0 - 0.35 * l)),
+        );
     }
     if let Some(ring) = s.rings.last() {
         let radius = 2.0 + m * 0.02 * a.kick_envelope();
-        c.glow(ring.x, ring.y, radius, 20.0 + 50.0 * a.punch(), alpha(p.spark, ring.life));
+        c.glow(
+            ring.x,
+            ring.y,
+            radius,
+            20.0 + 50.0 * a.punch(),
+            alpha(p.spark, ring.life),
+        );
         c.disc(ring.x, ring.y, radius, alpha(p.spark, ring.life));
     }
 }
@@ -563,8 +620,16 @@ fn banc(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let line_x = (u - 0.5) * w * (1.0 - 0.3 * l);
         let line_y = (u * 9.0 + t * 1.1).sin() * h * 0.17 + (hash(index, 2) - 0.5) * m * 0.06;
         let radial = push * (1.0 + level * 0.2) * scale;
-        let px_ = (weights[0] * a0.cos() * r0 + weights[1] * a1.cos() * r1 * 1.35 + weights[2] * a2.cos() * r2 * 1.25 + weights[3] * line_x) * radial;
-        let py_ = (weights[0] * a0.sin() * r0 + weights[1] * a1.sin() * r1 + weights[2] * a2.sin() * r2 + weights[3] * line_y) * radial;
+        let px_ = (weights[0] * a0.cos() * r0
+            + weights[1] * a1.cos() * r1 * 1.35
+            + weights[2] * a2.cos() * r2 * 1.25
+            + weights[3] * line_x)
+            * radial;
+        let py_ = (weights[0] * a0.sin() * r0
+            + weights[1] * a1.sin() * r1
+            + weights[2] * a2.sin() * r2
+            + weights[3] * line_y)
+            * radial;
         let (old_x, old_y) = (s.shoal_x[i], s.shoal_y[i]);
         let new_x = old_x + (cx + px_ - old_x) * follow;
         let new_y = old_y + (cy + py_ - old_y) * follow;
@@ -638,7 +703,10 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
             size,
             size,
             size,
-            alpha(shade, (0.18 + 0.7 * high * hash(i, (t * 5.0) as u32)) * fade),
+            alpha(
+                shade,
+                (0.18 + 0.7 * high * hash(i, (t * 5.0) as u32)) * fade,
+            ),
         );
     }
 
@@ -669,7 +737,10 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let spine = |v: f32| {
             let sample = a.wave((i * 83 + (v * STEPS as f32) as usize * 37) % 2048);
             (
-                base_x + side * long * 0.26 * v + (v * 5.0 + t * 1.7 + i as f32).sin() * long * 0.1 * v + sample * long * 0.12 * v,
+                base_x
+                    + side * long * 0.26 * v
+                    + (v * 5.0 + t * 1.7 + i as f32).sin() * long * 0.1 * v
+                    + sample * long * 0.12 * v,
                 base_y + long * v,
                 (1.0 - v) * (0.9 + 3.2 * level),
             )
@@ -679,7 +750,12 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         c.shape(&outline, alpha(shade, (0.34 + 0.52 * level) * fade));
         if i % 2 == 0 {
             let (tip_x, tip_y, _) = spine(1.0);
-            c.disc(tip_x, tip_y, 1.4 + 2.6 * level, alpha(p.spark, (0.4 + 0.6 * level) * fade));
+            c.disc(
+                tip_x,
+                tip_y,
+                1.4 + 2.6 * level,
+                alpha(p.spark, (0.4 + 0.6 * level) * fade),
+            );
         }
     }
     for k in 0..4 {
@@ -688,7 +764,9 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let long = m * (0.22 + 0.22 * mid);
         let spine = |v: f32| {
             (
-                base_x + (v * 7.0 + t * 1.2 + k as f32 * 2.0).sin() * m * 0.035 * v + side * m * 0.02 * v,
+                base_x
+                    + (v * 7.0 + t * 1.2 + k as f32 * 2.0).sin() * m * 0.035 * v
+                    + side * m * 0.02 * v,
                 rim_y + long * v,
                 (1.0 - v * 0.85) * m * 0.016,
             )
@@ -700,7 +778,10 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let mut points = Vec::with_capacity(62);
         for i in 0..=36 {
             let angle = PI + i as f32 / 36.0 * PI;
-            points.push((cx + angle.cos() * bell_w * scale_x, cy + angle.sin() * bell_h * scale_y));
+            points.push((
+                cx + angle.cos() * bell_w * scale_x,
+                cy + angle.sin() * bell_h * scale_y,
+            ));
         }
         for i in (0..=24).rev() {
             let x = cx + (i as f32 / 24.0 * 2.0 - 1.0) * bell_w * scale_x;
@@ -708,8 +789,18 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         }
         points
     };
-    c.glow(cx, cy - bell_h * 0.3, bell_w * 0.8, (36.0 + 110.0 * bass) * fade, alpha(p.spark, (0.4 + 0.5 * bass) * fade));
-    c.shape_fading(&dome(1.0, 1.0), alpha(p.tx, 0.62 * fade), alpha(p.spark, 0.46 * fade));
+    c.glow(
+        cx,
+        cy - bell_h * 0.3,
+        bell_w * 0.8,
+        (36.0 + 110.0 * bass) * fade,
+        alpha(p.spark, (0.4 + 0.5 * bass) * fade),
+    );
+    c.shape_fading(
+        &dome(1.0, 1.0),
+        alpha(p.tx, 0.62 * fade),
+        alpha(p.spark, 0.46 * fade),
+    );
     c.shape(&dome(0.72, 0.74), alpha(p.tide, 0.62));
     for i in 0..9 {
         let side = (i as f32 - 4.0) / 4.0;
@@ -717,7 +808,11 @@ fn meduse(c: &mut Canvas, f: &Frame, s: &mut VisualState) {
         let bottom = cx + side * bell_w * 0.86;
         let half = 1.5 + m * 0.012 * b[14 + i * 2];
         c.shape(
-            &[(top_x, top_y), (bottom - half, rim(bottom)), (bottom + half, rim(bottom))],
+            &[
+                (top_x, top_y),
+                (bottom - half, rim(bottom)),
+                (bottom + half, rim(bottom)),
+            ],
             alpha(p.tx, (0.2 + 0.5 * mid) * fade),
         );
     }
@@ -728,7 +823,10 @@ fn eclats(c: &mut Canvas, f: &Frame, s: &mut VisualState, grid: Option<&CoverGri
     let (w, h, a, p) = (f.w, f.h, f.sound, f.palette);
     let (b, l, t) = (a.levels(), s.lyrics, s.time);
     if f.hits.kick {
-        s.pulses.push(Pulse { radius: 0.0, strength: 0.6 + 0.4 * a.energy().min(1.0) });
+        s.pulses.push(Pulse {
+            radius: 0.0,
+            strength: 0.6 + 0.4 * a.energy().min(1.0),
+        });
         if s.pulses.len() > 5 {
             s.pulses.remove(0);
         }
@@ -764,8 +862,13 @@ fn eclats(c: &mut Canvas, f: &Frame, s: &mut VisualState, grid: Option<&CoverGri
                 Some(grid) => grid[(v * GRID as f32) as usize * GRID + (u * GRID as f32) as usize],
                 None => p.ramp[((u + v) * 3.5) as usize],
             };
-            let dot = tile * (0.42 + 0.62 * level + 0.42 * wave + 0.05 * (t + d * 9.0).sin()).clamp(0.2, 1.22);
-            let (nx, ny) = if distance > 0.0 { (dx / distance, dy / distance) } else { (0.0, 0.0) };
+            let dot = tile
+                * (0.42 + 0.62 * level + 0.42 * wave + 0.05 * (t + d * 9.0).sin()).clamp(0.2, 1.22);
+            let (nx, ny) = if distance > 0.0 {
+                (dx / distance, dy / distance)
+            } else {
+                (0.0, 0.0)
+            };
             let shift = wave * tile * 1.6;
             let opacity = lerp(1.0, 0.1 + 0.9 * smooth((x / w - 0.3) / 0.42), l);
             let shade = if wave > 0.55 { p.tx } else { base };
@@ -824,7 +927,12 @@ pub fn paint_water_line(
     let at = |i: usize| i as f32 / segments as f32 * w;
     let mut c = Canvas { window, x, y };
     let mut points: Vec<(f32, f32)> = vec![(0.0, h)];
-    points.extend(heights.iter().enumerate().map(|(i, height)| (at(i), *height)));
+    points.extend(
+        heights
+            .iter()
+            .enumerate()
+            .map(|(i, height)| (at(i), *height)),
+    );
     points.push((w, h));
     c.shape(&points, palette.deep);
 
@@ -899,7 +1007,14 @@ pub fn paint_volume(
         } else {
             alpha(palette.tx, 0.17)
         };
-        c.rounded(i as f32 * width + 0.5, h - height, width - 2.0, height, 2.0, color);
+        c.rounded(
+            i as f32 * width + 0.5,
+            h - height,
+            width - 2.0,
+            height,
+            2.0,
+            color,
+        );
     }
 }
 
@@ -946,5 +1061,46 @@ mod tests {
             assert!(!visual.describe().is_empty());
         }
         assert_eq!(Visual::from_name("autre"), None);
+    }
+}
+
+/// A wide band of bars mirrored around the middle, lit up to where the track is.
+pub fn paint_wave(
+    bounds: Bounds<Pixels>,
+    sound: &Analyzer,
+    palette: &Palette,
+    progress: f32,
+    window: &mut Window,
+) {
+    const BARS: usize = 96;
+    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+    let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+    let mut c = Canvas { window, x, y };
+    let width = w / BARS as f32;
+    let levels = sound.levels();
+    for i in 0..BARS {
+        let u = i as f32 / (BARS - 1) as f32;
+        // Folded so that the low bands sit in the middle, where the eye goes.
+        let band = ((u - 0.5).abs() * 2.0 * (levels.len() - 1) as f32) as usize;
+        let rest = 0.12 + 0.1 * (i as f32 * 0.7).sin().abs();
+        let level = lerp(
+            rest,
+            (levels[band] * 1.5).min(1.0).max(rest),
+            sound.activity(),
+        );
+        let height = (h * level).max(3.0);
+        let color = if u <= progress {
+            mix(palette.tide, palette.spark, u)
+        } else {
+            alpha(palette.tx, 0.18)
+        };
+        c.rounded(
+            i as f32 * width + 1.0,
+            (h - height) / 2.0,
+            (width - 2.0).max(1.0),
+            height,
+            ((width - 2.0) / 2.0).max(1.0),
+            color,
+        );
     }
 }

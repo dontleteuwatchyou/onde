@@ -113,7 +113,8 @@ impl Onde {
                     this.fetch_covers(cx);
                     if this.covers_running == 0 {
                         // A batch of full-size pictures was just decoded and dropped.
-                        cx.background_spawn(async { crate::memory::give_back() }).detach();
+                        cx.background_spawn(async { crate::memory::give_back() })
+                            .detach();
                     }
                     cx.notify();
                 });

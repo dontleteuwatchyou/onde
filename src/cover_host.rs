@@ -105,7 +105,8 @@ impl Hosting {
         let done = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
-        let (shared_done, shared_failed, shared_stop) = (done.clone(), failed.clone(), stop.clone());
+        let (shared_done, shared_failed, shared_stop) =
+            (done.clone(), failed.clone(), stop.clone());
         std::thread::spawn(move || {
             let mut failures = 0;
             for (key, picture) in jobs {
@@ -143,7 +144,10 @@ impl Hosting {
     pub fn describe(&self) -> String {
         let done = self.done.load(Ordering::Relaxed);
         if self.failed.load(Ordering::Relaxed) {
-            format!("Arrêté à {done} sur {} : l’hébergeur ne répond pas", self.total)
+            format!(
+                "Arrêté à {done} sur {} : l’hébergeur ne répond pas",
+                self.total
+            )
         } else if done >= self.total {
             "Toutes hébergées".to_owned()
         } else {
@@ -181,7 +185,10 @@ mod tests {
     #[test]
     fn hosts_what_has_a_picture_and_keeps_the_link() {
         let links = Arc::new(Links::in_memory());
-        let jobs = vec![("a".to_owned(), picture(true)), ("b".to_owned(), picture(false))];
+        let jobs = vec![
+            ("a".to_owned(), picture(true)),
+            ("b".to_owned(), picture(false)),
+        ];
         let hosting = Hosting::start(jobs, links.clone(), hosted);
         wait_until(|| hosting.done.load(Ordering::Relaxed) == 2);
         assert_eq!(links.get("a").as_deref(), Some("https://hote/a.jpg"));

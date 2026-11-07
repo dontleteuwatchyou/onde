@@ -246,9 +246,7 @@ impl YtDlp {
         // Its own group, so cancelling also stops what it started (ffmpeg).
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command
-            .spawn()
-            .map_err(missing_program)?;
+        let mut child = command.spawn().map_err(missing_program)?;
         let stdout = child.stdout.take().context("sortie de yt-dlp")?;
         let mut stderr = child.stderr.take().context("sortie de yt-dlp")?;
         // Read in parallel: a full pipe would block yt-dlp.

@@ -80,7 +80,12 @@ fn api_env(root: &Path) -> Vec<(String, String)> {
             matches!(*key, "ONDE_TELEGRAM_API_ID" | "ONDE_TELEGRAM_API_HASH")
                 && std::env::var_os(key).is_none()
         })
-        .map(|(key, value)| (key.to_owned(), value.trim().trim_matches(['\'', '"']).to_owned()))
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                value.trim().trim_matches(['\'', '"']).to_owned(),
+            )
+        })
         .collect()
 }
 

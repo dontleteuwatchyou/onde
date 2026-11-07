@@ -44,7 +44,13 @@ pub fn find_or_upload(
     title: &str,
     picture: Option<Picture>,
 ) -> Option<String> {
-    find(artist, album, title).or_else(|| upload(TEMPORARY_HOST, Some(UPLOAD_LIFETIME), &reduced(&picture?()?)?))
+    find(artist, album, title).or_else(|| {
+        upload(
+            TEMPORARY_HOST,
+            Some(UPLOAD_LIFETIME),
+            &reduced(&picture?()?)?,
+        )
+    })
 }
 
 /// A square JPEG: small to send, and without what the original carried.
@@ -71,7 +77,10 @@ pub fn lasts(url: &str) -> bool {
 fn upload_body(lifetime: Option<&str>, jpeg: &[u8]) -> Vec<u8> {
     let mut body = Vec::with_capacity(jpeg.len() + 512);
     let time = lifetime.map(|value| ("time", value));
-    for (name, value) in [Some(("reqtype", "fileupload")), time].into_iter().flatten() {
+    for (name, value) in [Some(("reqtype", "fileupload")), time]
+        .into_iter()
+        .flatten()
+    {
         body.extend_from_slice(
             format!(
                 "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
@@ -180,7 +189,13 @@ fn pick_apple(reply: &Value, kind: Kind, artist: &str, name: &str) -> Option<Str
             same_artist(result["artistName"].as_str(), artist)
                 && same_name(result[field].as_str(), name)
         })
-        .find_map(|result| usable(result["artworkUrl100"].as_str()?.replace("100x100bb", "512x512bb")))
+        .find_map(|result| {
+            usable(
+                result["artworkUrl100"]
+                    .as_str()?
+                    .replace("100x100bb", "512x512bb"),
+            )
+        })
 }
 
 fn pick_deezer(reply: &Value, kind: Kind, artist: &str, name: &str) -> Option<String> {
@@ -294,7 +309,10 @@ mod tests {
         picture.write_to(&mut png, ImageFormat::Png).unwrap();
         let jpeg = reduced(&png.into_inner()).unwrap();
         let sent = image::load_from_memory(&jpeg).unwrap();
-        assert_eq!((sent.width(), sent.height()), (UPLOADED_SIDE, UPLOADED_SIDE));
+        assert_eq!(
+            (sent.width(), sent.height()),
+            (UPLOADED_SIDE, UPLOADED_SIDE)
+        );
         assert_eq!(reduced(b"<html>"), None);
     }
 
@@ -338,7 +356,10 @@ mod tests {
         let reply = json!({ "data": [
             { "title": "Discovery", "artist": { "name": "Data Punk" }, "cover_big": "https://a" },
         ]});
-        assert_eq!(pick_deezer(&reply, Kind::Album, "Daft Punk", "Discovery"), None);
+        assert_eq!(
+            pick_deezer(&reply, Kind::Album, "Daft Punk", "Discovery"),
+            None
+        );
     }
 
     #[test]

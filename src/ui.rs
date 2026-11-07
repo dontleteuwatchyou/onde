@@ -3,6 +3,7 @@
 mod browse;
 mod covers;
 mod downloads;
+mod layouts;
 mod player;
 mod playlists;
 mod quality;
@@ -26,9 +27,9 @@ use gpui::{
 use crate::analysis::Analyzer;
 use crate::catalog::{Catalog, TrackSort, album_key};
 use crate::collections::Collections;
+use crate::config;
 use crate::cover_host::{Hosting, Links};
 use crate::discord::Presence;
-use crate::config;
 use crate::engine::Engine;
 use crate::library::{Location, format_time};
 use crate::lyrics::source::{self, Origin};
@@ -37,7 +38,8 @@ use crate::queue::{Previous, Queue};
 use crate::sources::MusicSource;
 use crate::sources::local::LocalFolder;
 use crate::sources::subsonic::Subsonic;
-use crate::theme::{Palette, alpha, pal, set_palette};
+use crate::theme::rad;
+use crate::theme::{Layout, Look, Palette, alpha, look, pal, set_look, set_palette};
 use crate::visuals::{self, VISUALS, Visual, VisualState, WaterLine};
 use browse::LibraryView;
 use covers::CoverArt;
@@ -252,6 +254,12 @@ impl Onde {
         if let Some(theme) = &settings.theme {
             set_palette(Palette::named(theme));
         }
+        set_look(Look::from_names(
+            settings.layout.as_deref(),
+            settings.rounding.as_deref(),
+            settings.density.as_deref(),
+            settings.round_covers,
+        ));
         let rate = engine.as_ref().map_or(44_100, Engine::sample_rate);
         let mut this = Self {
             quality_open: false,
@@ -745,7 +753,8 @@ impl Onde {
             .flex_1()
             .min_w_0()
             .overflow_hidden();
-        if !compact {
+        let classic = compact || look().layout == Layout::Classique;
+        if !compact && classic {
             for (index, (label, _, target)) in NAVIGATION.into_iter().enumerate() {
                 let on = self.nav_active(&target);
                 nav = nav.child(
@@ -755,7 +764,7 @@ impl Onde {
                         .flex()
                         .items_center()
                         .px_3()
-                        .rounded(px(10.))
+                        .rounded(rad(10.))
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
                         .when(on, |item| {
@@ -772,8 +781,9 @@ impl Onde {
                 );
             }
         }
+        let empty = !classic && back.is_none();
         div()
-            .h(px(56.))
+            .h(px(if empty { 16. } else { 56. }))
             .flex_none()
             .flex()
             .items_center()
@@ -785,14 +795,16 @@ impl Onde {
                         .on_click(cx.listener(move |this, _, _, cx| this.go(back.clone(), cx))),
                 )
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(logo)
-                    .child(display("onde", 22.)),
-            )
+            .when(classic, |top| {
+                top.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(logo)
+                        .child(display("onde", 22.)),
+                )
+            })
             .child(nav)
     }
 
@@ -834,6 +846,7 @@ impl Render for Onde {
                 && self.adding_to.is_none()
                 && (self.screen == Screen::Downloads || self.library_typing));
         let compact = window.viewport_size().width < px(COMPACT_WIDTH);
+        window.set_rem_size(px(look().density));
         let root = div()
             .track_focus(&self.focus)
             .key_context(if typing { "Recherche" } else { "Lecteur" })
@@ -902,9 +915,7 @@ impl Render for Onde {
                     Screen::Artist(name) => self.render_artist(name, window, cx),
                     Screen::Playlists => self.render_playlists(cx).into_any_element(),
                     Screen::Liked => self.render_collection(None, window, cx),
-                    Screen::Playlist(index) => {
-                        self.render_collection(Some(*index), window, cx)
-                    }
+                    Screen::Playlist(index) => self.render_collection(Some(*index), window, cx),
                     Screen::Downloads => self.render_downloads(window, cx).into_any_element(),
                     Screen::Sources => self.render_sources(cx).into_any_element(),
                     Screen::Settings => self.render_settings(cx).into_any_element(),
@@ -932,11 +943,15 @@ impl Render for Onde {
                 .into_any_element()
         };
         let queue = self.show_queue.then(|| self.render_queue(cx));
+        let side = (!compact && !self.fullscreen)
+            .then(|| self.render_side(cx))
+            .flatten();
         root.child(
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
+                .children(side)
                 .child(div().flex_1().min_w_0().flex().flex_col().child(main))
                 .when_some(queue, |row, queue| row.child(queue)),
         )

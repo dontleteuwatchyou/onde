@@ -8,6 +8,7 @@ use gpui::{
 };
 
 use super::covers::CoverArt;
+use crate::theme::rad;
 use crate::theme::{alpha, pal};
 
 pub const GOOD: Rgba = Rgba {
@@ -40,7 +41,7 @@ pub fn icon_button(id: impl Into<ElementId>, name: &str, on: bool) -> Stateful<D
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(10.))
+        .rounded(rad(10.))
         .cursor_pointer()
         .when(on, |button| button.bg(palette.rise2))
         .hover(|button| button.bg(pal().rise2))
@@ -56,7 +57,7 @@ pub fn icon_small(id: impl Into<ElementId>, name: &str) -> Stateful<Div> {
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(6.))
+        .rounded(rad(6.))
         .cursor_pointer()
         .hover(|button| button.bg(pal().rise2))
         .child(icon(name, 16., pal().tx2))
@@ -140,7 +141,7 @@ pub fn tag(label: impl Into<SharedString>) -> Div {
         .flex()
         .items_center()
         .px_1p5()
-        .rounded(px(6.))
+        .rounded(rad(6.))
         .bg(palette.rise2)
         .text_color(palette.tx)
         .font_family("DM Mono")
@@ -177,12 +178,24 @@ pub fn mono(text: impl Into<SharedString>) -> Div {
 /// The cover, or a tide of color while there is none.
 pub fn cover(art: Option<&Arc<CoverArt>>, size: f32, radius: f32) -> Div {
     let palette = pal();
-    let frame = div().size(px(size)).flex_none().rounded(px(radius));
+    let round = |element: Div| {
+        if crate::theme::look().round_covers {
+            element.rounded_full()
+        } else {
+            element.rounded(rad(radius))
+        }
+    };
+    let frame = round(div().size(px(size)).flex_none());
     match art {
         Some(art) => frame.child(
             img(art.image.clone())
                 .size(px(size))
-                .rounded(px(radius))
+                .when(crate::theme::look().round_covers, |image| {
+                    image.rounded_full()
+                })
+                .when(!crate::theme::look().round_covers, |image| {
+                    image.rounded(rad(radius))
+                })
                 .object_fit(ObjectFit::Cover),
         ),
         None => frame
