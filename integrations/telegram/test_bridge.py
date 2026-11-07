@@ -206,6 +206,24 @@ class BridgeTests(unittest.TestCase):
                 send(action='quit')
                 self.assertEqual(proc.wait(timeout=5), 0)
 
+    def test_tracks_already_in_the_library_are_recognised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('Vacra - Album - Fille à Papa.flac', 'Damso - Ipséité - Θ. Macarena (1).mp3',
+                         'notes.txt', '.onde-telegram-1.part'):
+                Path(tmp, name).write_bytes(b'')
+            names = bridge.library_names(tmp)
+            self.assertEqual(len(names), 2)
+            self.assertTrue(bridge.already_have('Vacra Fille a Papa', names))
+            self.assertTrue(bridge.already_have('Damso Macarena', names))
+            self.assertFalse(bridge.already_have('Vacra Autre titre', names))
+            self.assertFalse(bridge.already_have('', names))
+            fd = os.open(tmp, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                self.assertTrue(bridge.same_track_exists(fd, 'Vacra - Album - Fille à Papa'))
+                self.assertFalse(bridge.same_track_exists(fd, 'Vacra - Album - Autre'))
+            finally:
+                os.close(fd)
+
     def test_posted_id_reads_the_new_message(self):
         update = type('UpdateMessageID', (), {'id': 77})()
         self.assertEqual(bridge.posted_id(types.SimpleNamespace(updates=[update])), 77)

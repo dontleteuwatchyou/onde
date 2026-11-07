@@ -228,6 +228,36 @@ def readable_name(audio, message):
     return name.encode('utf-8')[:180].decode('utf-8', errors='ignore')
 
 
+AUDIO_EXTENSIONS = ('.flac', '.mp3', '.m4a', '.ogg', '.opus', '.wav')
+
+
+def words(text):
+    """Lowercase words without accents, to compare names loosely."""
+    import unicodedata
+    plain = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode().lower()
+    return re.findall(r'[a-z0-9]+', plain)
+
+
+def library_names(folder):
+    """Word sets of the audio files already in the folder, collision suffixes dropped."""
+    names = []
+    for entry in os.scandir(folder):
+        stem, extension = os.path.splitext(entry.name)
+        if extension.lower() in AUDIO_EXTENSIONS and not entry.name.startswith('.'):
+            names.append(set(words(re.sub(r' \(\d+\)$', '', stem))))
+    return names
+
+
+def already_have(query, names):
+    wanted = set(words(query))
+    return bool(wanted) and any(wanted <= name for name in names)
+
+
+def same_track_exists(folder_fd, stem):
+    present = set(os.listdir(folder_fd))
+    return any(f'{stem}{extension}' in present for extension in AUDIO_EXTENSIONS)
+
+
 def audio_extension(head):
     if head.startswith(b'fLaC'):
         return '.flac'
@@ -279,7 +309,7 @@ async def main():
     # Download queue: inline results or searches, prepared PARALLEL at a time.
     waiting = deque()
     preparing = {}
-    batch = {'name': '', 'total': 0, 'done': 0, 'failed': [], 'current': ''}
+    batch = {'name': '', 'total': 0, 'done': 0, 'present': 0, 'failed': [], 'current': ''}
     runner = None
     transfer = asyncio.Lock()
     synthetic = 0
@@ -341,7 +371,7 @@ async def main():
 
     async def download(message):
         async with transfer:
-            await download_unlocked(message)
+            return await download_unlocked(message)
 
     async def download_unlocked(message):
         if message.id in received:
@@ -379,6 +409,10 @@ async def main():
                 stem = readable_name(audio, message)
             if stem.lower().endswith(extension):
                 stem = stem[:-len(extension)]
+            if same_track_exists(descriptor, stem):
+                received.add(message.id)
+                emit(status=f'Déjà dans la bibliothèque : {stem}')
+                return 'present'
             for attempt in range(1000):
                 target = f'{stem}{"" if attempt == 0 else f" ({attempt})"}{extension}'
                 try:
@@ -391,6 +425,7 @@ async def main():
                 raise ValueError('collisions')
             received.add(message.id)
             emit(file=str(Path(folder) / target), status=f'Fichier reçu : {target}')
+            return 'new'
         finally:
             if temporary:
                 os.unlink(temporary, dir_fd=descriptor)
@@ -410,13 +445,14 @@ async def main():
     def report():
         active = bool(runner and not runner.done() and not batch.get('finished'))
         emit(batch={'name': batch['name'], 'total': batch['total'], 'done': batch['done'],
+                    'present': batch['present'],
                     'failed': batch['failed'][-50:], 'current': batch['current'],
                     'active': active})
 
     def enqueue(items, name):
         nonlocal runner
         if not runner or runner.done():
-            batch.update(name=name, total=0, done=0, failed=[], current='', finished=False)
+            batch.update(name=name, total=0, done=0, present=0, failed=[], current='', finished=False)
         elif name and batch['name'] != name:
             batch['name'] = 'Plusieurs demandes'
         batch['total'] += len(items)
@@ -496,9 +532,10 @@ async def main():
                 batch['current'] = f'Réception : {label}'
                 report()
                 try:
-                    await asyncio.wait_for(download(message), 600)
+                    outcome = await asyncio.wait_for(download(message), 600)
                     if entry:
                         batch['done'] += 1
+                        batch['present'] += outcome == 'present'
                 except Exception as error:
                     if entry:
                         fail(entry[0]['label'], type(error).__name__)
@@ -513,7 +550,9 @@ async def main():
         requested.clear()
         report()
         missing = len(batch['failed'])
-        emit(status=f'Terminé : {batch["done"]} / {batch["total"]} reçus'
+        present = batch['present']
+        emit(status=f'Terminé : {batch["done"]} / {batch["total"]} traités'
+             + (f', {present} déjà présents' if present else '')
              + (f', {missing} en échec.' if missing else '.'))
 
     async def incoming(event):
@@ -593,8 +632,20 @@ async def main():
                     return
                 if playlist is not None:
                     name, queries = playlist
+                    names = library_names(folder)
+                    unique, seen = [], set()
+                    for query in queries:
+                        key = ' '.join(sorted(words(query)))
+                        if key not in seen:
+                            seen.add(key)
+                            unique.append(query)
+                    fresh = [query for query in unique if not already_have(query, names)]
+                    skipped = len(queries) - len(fresh)
+                    queries = fresh
+                    if skipped:
+                        emit(status=f'« {name} » : {skipped} morceau(x) déjà présents ou en double, ignorés.')
                     if not queries:
-                        emit(status=f'« {name} » ne contient aucun morceau lisible.')
+                        emit(status=f'« {name} » : rien de nouveau à télécharger.')
                         return
                     emit(status=f'« {name} » : {len(queries)} morceaux à chercher et télécharger. '
                          'Le bot les prépare un par un, ça peut prendre un moment.')

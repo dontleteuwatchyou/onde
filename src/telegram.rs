@@ -23,6 +23,9 @@ pub struct Batch {
     pub total: usize,
     #[serde(default)]
     pub done: usize,
+    /// Already in the library, so not saved again.
+    #[serde(default)]
+    pub present: usize,
     #[serde(default)]
     pub failed: Vec<String>,
     #[serde(default)]
