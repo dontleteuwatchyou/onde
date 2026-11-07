@@ -14,6 +14,23 @@ pub struct MenuButton {
     pub details: String,
 }
 
+/// Progress of the download queue: selected results or a whole playlist.
+#[derive(Default, Clone, PartialEq, serde::Deserialize)]
+pub struct Batch {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub done: usize,
+    #[serde(default)]
+    pub failed: Vec<String>,
+    #[serde(default)]
+    pub current: String,
+    #[serde(default)]
+    pub active: bool,
+}
+
 #[derive(Default, Clone)]
 pub struct State {
     pub connected: bool,
@@ -22,6 +39,7 @@ pub struct State {
     pub qr: Vec<Vec<bool>>,
     pub files: Vec<String>,
     pub buttons: Vec<MenuButton>,
+    pub batch: Batch,
 }
 
 pub struct Telegram {
@@ -117,6 +135,9 @@ impl Telegram {
                 if let Some(value) = event.get("qr") {
                     state.qr = serde_json::from_value(value.clone()).unwrap_or_default();
                 }
+                if let Some(value) = event.get("batch") {
+                    state.batch = serde_json::from_value(value.clone()).unwrap_or_default();
+                }
                 if let Some(value) = event["file"].as_str() {
                     state.files.push(value.to_owned());
                 }
@@ -130,6 +151,7 @@ impl Telegram {
             state.busy = false;
             state.qr.clear();
             state.buttons.clear();
+            state.batch.active = false;
             if !state.status.is_empty() {
                 state.status.push_str(" · ");
             }

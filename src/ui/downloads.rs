@@ -29,6 +29,11 @@ pub(super) struct Downloads {
     telegram_consent: bool,
     telegram_delete: bool,
     telegram_received: usize,
+    /// Results ticked for a group download, by bridge key.
+    telegram_picked: Vec<String>,
+    /// Last queue progress seen, to repaint every page when it moves.
+    telegram_batch: crate::telegram::Batch,
+    pub(super) telegram_batch_hidden: bool,
     sources: Vec<Arc<dyn DownloadSource>>,
     selected: usize,
     telegram_selected: bool,
@@ -69,6 +74,9 @@ impl Downloads {
             telegram_consent: session,
             telegram_delete: false,
             telegram_received: 0,
+            telegram_picked: Vec::new(),
+            telegram_batch: Default::default(),
+            telegram_batch_hidden: false,
             sources: download::sources(),
             selected: 0,
             telegram_selected: false,
@@ -103,12 +111,22 @@ impl Onde {
     }
 
     pub(super) fn poll_telegram(&mut self, cx: &mut Context<Self>) {
-        let count = self
+        let (count, batch) = self
             .downloads
             .telegram
             .as_ref()
-            .map(|bridge| bridge.state.lock().unwrap().files.len())
-            .unwrap_or(0);
+            .map(|bridge| {
+                let state = bridge.state.lock().unwrap();
+                (state.files.len(), state.batch.clone())
+            })
+            .unwrap_or_default();
+        if batch != self.downloads.telegram_batch {
+            if batch.active && !self.downloads.telegram_batch.active {
+                self.downloads.telegram_batch_hidden = false;
+            }
+            self.downloads.telegram_batch = batch;
+            cx.notify();
+        }
         if count > self.downloads.telegram_received {
             self.downloads.telegram_received = count;
             self.refresh_library_after_download(cx);
@@ -147,6 +165,9 @@ impl Onde {
             } else {
                 json!({"action": action})
             };
+            if action == "send" {
+                self.downloads.telegram_picked.clear();
+            }
             self.downloads.telegram.as_mut().unwrap().send(command)?;
             self.downloads.error = None;
             Ok(())
@@ -157,6 +178,101 @@ impl Onde {
         cx.notify();
     }
 
+    fn telegram_queue(&mut self, keys: Vec<String>, cx: &mut Context<Self>) {
+        if let Some(bridge) = &mut self.downloads.telegram
+            && let Err(error) = bridge.send(json!({"action": "queue", "keys": keys}))
+        {
+            self.downloads.error = Some(error.to_string().into());
+        }
+        cx.notify();
+    }
+
+    pub(super) fn stop_telegram_queue(&mut self, cx: &mut Context<Self>) {
+        self.telegram_action("cancel", cx);
+    }
+
+    /// Queue progress under the top bar, on every page, until dismissed.
+    pub(super) fn render_telegram_banner(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let batch = &self.downloads.telegram_batch;
+        if batch.total == 0 || self.downloads.telegram_batch_hidden {
+            return None;
+        }
+        let palette = pal();
+        let failed = batch.failed.len();
+        let finished = batch.done + failed;
+        let fraction = (finished as f32 / batch.total.max(1) as f32).clamp(0., 1.);
+        let mut summary = format!("Telegram · {} : {} / {} reçus", batch.name, batch.done, batch.total);
+        if failed > 0 {
+            summary.push_str(&format!(" · {failed} en échec"));
+        }
+        let detail = if batch.active {
+            if batch.current.is_empty() {
+                "En attente du bot…".to_owned()
+            } else {
+                batch.current.clone()
+            }
+        } else if failed > 0 {
+            format!("Non trouvés : {}", batch.failed.join(" · "))
+        } else {
+            "Tout est dans la bibliothèque.".to_owned()
+        };
+        Some(
+            div()
+                .mx_8()
+                .mb_2()
+                .px_4()
+                .py_2()
+                .rounded(px(12.))
+                .bg(palette.rise)
+                .flex()
+                .flex_col()
+                .gap_1()
+                .text_size(px(13.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(div().flex_1().min_w_0().truncate().child(summary))
+                        .when(self.screen != Screen::Downloads, |row| {
+                            row.child(ghost("tg-batch-open", "Voir").on_click(cx.listener(
+                                |this, _, _, cx| this.go(Screen::Downloads, cx),
+                            )))
+                        })
+                        .child(if batch.active {
+                            btn("tg-batch-stop", "Arrêter")
+                                .on_click(cx.listener(|this, _, _, cx| this.stop_telegram_queue(cx)))
+                        } else {
+                            btn("tg-batch-close", "Fermer").on_click(cx.listener(|this, _, _, cx| {
+                                this.downloads.telegram_batch_hidden = true;
+                                cx.notify();
+                            }))
+                        }),
+                )
+                .child(
+                    div()
+                        .h(px(4.))
+                        .w_full()
+                        .rounded(px(2.))
+                        .bg(palette.rise2)
+                        .child(
+                            div()
+                                .h_full()
+                                .w(relative(fraction))
+                                .rounded(px(2.))
+                                .bg(if failed > 0 && !batch.active { ERROR } else { palette.spark }),
+                        ),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(12.))
+                        .text_color(palette.tx2)
+                        .child(detail),
+                ),
+        )
+    }
+
     fn render_telegram(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let state = self
             .downloads
@@ -164,7 +280,7 @@ impl Onde {
             .as_ref()
             .map(|bridge| bridge.state.lock().unwrap().clone())
             .unwrap_or_default();
-        let mut panel = div().id("telegram-panel").max_h(px(300.)).overflow_y_scroll().flex_shrink_0().flex().flex_col().gap_2().p_3().bg(pal().deep).text_sm()
+        let mut panel = div().id("telegram-panel").max_h(px(440.)).overflow_y_scroll().flex_shrink_0().flex().flex_col().gap_2().p_3().bg(pal().deep).text_sm()
             .child("Telegram · @DeezLoad2Bot")
             .child(format!("État : {}", if state.status.is_empty() { "Désactivé" } else { &state.status }));
         if !self.downloads.telegram_consent {
@@ -247,41 +363,127 @@ impl Onde {
             let name = std::path::Path::new(file).file_name().map_or(file.as_str(), |name| name.to_str().unwrap_or(file));
             panel = panel.child(format!("Reçu : {name}"));
         }
-        for (index, choice) in state.buttons.iter().enumerate() {
-            let key = choice.key.clone();
+        let picked: Vec<String> = state
+            .buttons
+            .iter()
+            .filter(|choice| self.downloads.telegram_picked.contains(&choice.key))
+            .map(|choice| choice.key.clone())
+            .collect();
+        let selectable = state.buttons.iter().any(|choice| choice.key.starts_with("inline:"));
+        if selectable {
+            let all: Vec<String> = state.buttons.iter().map(|choice| choice.key.clone()).collect();
+            let count = picked.len();
             panel = panel.child(
                 div()
-                    .id(("tg-menu", index))
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(pal().rise2)
-                    .cursor_pointer()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(choice.label.clone())
-                            .when(!choice.details.is_empty(), |row| {
-                                row.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(pal().tx2)
-                                        .child(choice.details.clone()),
-                                )
-                            }),
+                            .text_color(pal().tx2)
+                            .child("Clique sur un titre pour le télécharger, ou coche-en plusieurs."),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(bridge) = &mut this.downloads.telegram {
-                            if let Err(error) = bridge.send(json!({"action": "click", "key": key}))
-                            {
-                                this.downloads.error = Some(error.to_string().into());
-                            }
-                        }
-                        cx.notify();
-                    })),
+                    .when(count > 0, |bar| {
+                        bar.child(
+                            btn("tg-queue", format!("Télécharger la sélection ({count})")).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    let keys = std::mem::take(&mut this.downloads.telegram_picked);
+                                    this.telegram_queue(keys, cx);
+                                }),
+                            ),
+                        )
+                        .child(ghost("tg-unpick", "Vider").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.downloads.telegram_picked.clear();
+                                cx.notify();
+                            },
+                        )))
+                    })
+                    .when(count < all.len(), |bar| {
+                        bar.child(ghost("tg-pick-all", "Tout cocher").on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.downloads.telegram_picked = all.clone();
+                                cx.notify();
+                            },
+                        )))
+                    }),
             );
+            if count > 1 {
+                panel = panel.child(
+                    div().text_color(pal().tx3).child(
+                        "Le bot prépare les morceaux un par un (trois à la fois) : ça peut prendre quelques minutes. Tu peux changer de page, le suivi reste affiché en haut.",
+                    ),
+                );
+            }
+        }
+        for (index, choice) in state.buttons.iter().enumerate() {
+            let key = choice.key.clone();
+            let pick_key = key.clone();
+            let ticked = picked.contains(&key);
+            let label = div()
+                .id(("tg-menu", index))
+                .flex_1()
+                .min_w_0()
+                .cursor_pointer()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(choice.label.clone())
+                .when(!choice.details.is_empty(), |row| {
+                    row.child(
+                        div()
+                            .text_sm()
+                            .text_color(pal().tx2)
+                            .child(choice.details.clone()),
+                    )
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(bridge) = &mut this.downloads.telegram {
+                        if let Err(error) = bridge.send(json!({"action": "click", "key": key})) {
+                            this.downloads.error = Some(error.to_string().into());
+                        }
+                    }
+                    cx.notify();
+                }));
+            let row = div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(if ticked { pal().rise } else { pal().rise2 })
+                .when(selectable, |row| {
+                    row.child(
+                        div()
+                            .id(("tg-pick", index))
+                            .flex_none()
+                            .size(px(20.))
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(if ticked { pal().spark } else { pal().tx3 })
+                            .when(ticked, |tick| tick.bg(pal().spark))
+                            .cursor_pointer()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_size(px(13.))
+                            .text_color(pal().deep)
+                            .when(ticked, |tick| tick.child("✓"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let picked = &mut this.downloads.telegram_picked;
+                                if let Some(at) = picked.iter().position(|key| *key == pick_key) {
+                                    picked.remove(at);
+                                } else {
+                                    picked.push(pick_key.clone());
+                                }
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child(label);
+            panel = panel.child(row);
         }
         panel
     }
@@ -298,6 +500,8 @@ impl Onde {
     fn search_text(&mut self) -> Option<&mut String> {
         if self.naming.is_some() {
             self.naming.as_mut()
+        } else if self.filling.is_some() {
+            Some(&mut self.fill_query)
         } else if self.screen == Screen::Downloads {
             Some(&mut self.downloads.query)
         } else if self.library_typing {
@@ -308,7 +512,7 @@ impl Onde {
     }
 
     fn search_text_changed(&mut self, cx: &mut Context<Self>) {
-        if self.naming.is_none() && self.screen != Screen::Downloads {
+        if self.naming.is_none() && self.filling.is_none() && self.screen != Screen::Downloads {
             self.refilter();
         }
         cx.notify();
@@ -348,6 +552,8 @@ impl Onde {
     pub(super) fn submit_search(&mut self, cx: &mut Context<Self>) {
         if self.naming.is_some() {
             self.confirm_naming(cx);
+        } else if self.filling.is_some() {
+            self.add_first_match(cx);
         } else if self.screen == Screen::Downloads {
             self.search(cx);
         } else {
@@ -359,6 +565,9 @@ impl Onde {
     pub(super) fn leave_search(&mut self, cx: &mut Context<Self>) {
         if self.naming.is_some() {
             self.naming = None;
+            cx.notify();
+        } else if self.filling.is_some() {
+            self.filling = None;
             cx.notify();
         } else if self.screen == Screen::Downloads {
             self.go(Screen::Home, cx);
@@ -619,15 +828,30 @@ impl Onde {
             .bg(palette.rise)
             .border_1()
             .border_color(palette.tide)
+            .cursor_text()
+            .id("download-search")
+            .on_click(cx.listener(|this, _, window, cx| {
+                window.focus(&this.focus);
+                cx.notify();
+            }))
             .child(icon("search", 18., palette.tx2))
-            .when(state.query.is_empty(), |field| {
-                field
-                    .text_color(palette.tx3)
-                    .child("Tape un titre ou un artiste, puis Entrée")
-            })
-            .when(!state.query.is_empty(), |field| {
-                field.child(format!("{}▏", state.query))
-            });
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .child(div().truncate().child(format!("{}▏", state.query)))
+                    .when(state.query.is_empty(), |line| {
+                        line.child(
+                            div()
+                                .text_color(palette.tx3)
+                                .child(if state.telegram_selected {
+                                    "Titre, artiste ou lien de playlist Spotify, Deezer, SoundCloud"
+                                } else {
+                                    "Tape un titre ou un artiste, puis Entrée"
+                                }),
+                        )
+                    }),
+            );
 
         let mut rows = div().flex().flex_col();
         for (index, hit) in state.hits.iter().enumerate() {

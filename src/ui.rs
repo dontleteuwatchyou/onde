@@ -205,6 +205,9 @@ pub struct Onde {
     adding_to: Option<usize>,
     /// The name being typed for a new playlist.
     naming: Option<String>,
+    /// The playlist being filled from the whole library, and the filter typed there.
+    filling: Option<usize>,
+    fill_query: String,
     /// The delete button has been pressed once.
     deleting: bool,
     presence: Option<Presence>,
@@ -296,6 +299,8 @@ impl Onde {
             track_index: HashMap::new(),
             adding_to: None,
             naming: None,
+            filling: None,
+            fill_query: String::new(),
             deleting: false,
             presence: None,
             cover_links: Arc::new(Links::load()),
@@ -335,6 +340,7 @@ impl Onde {
         self.fullscreen = false;
         self.adding_to = None;
         self.naming = None;
+        self.filling = None;
         self.deleting = false;
         cx.notify();
     }
@@ -680,6 +686,8 @@ impl Onde {
     fn leave(&mut self, cx: &mut Context<Self>) {
         if self.adding_to.is_some() {
             self.adding_to = None;
+        } else if self.filling.is_some() {
+            self.filling = None;
         } else if self.fullscreen {
             self.fullscreen = false;
         } else if self.show_queue {
@@ -815,6 +823,7 @@ impl Render for Onde {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = pal();
         let typing = self.naming.is_some()
+            || self.filling.is_some()
             || (!self.fullscreen
                 && !self.ask_folder
                 && !self.quality_open
@@ -914,6 +923,7 @@ impl Render for Onde {
                     )
                 })
                 .children(self.render_update_banner(cx))
+                .children(self.render_telegram_banner(cx))
                 .child(div().flex_1().min_h_0().flex().flex_col().child(page))
                 .into_any_element()
         };
@@ -932,6 +942,9 @@ impl Render for Onde {
         })
         .when(self.adding_to.is_some(), |root| {
             root.child(self.render_add_menu(cx))
+        })
+        .when(self.filling.is_some(), |root| {
+            root.child(self.render_fill_menu(cx))
         })
     }
 }
