@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -30,6 +31,7 @@ const MINIMUM_GAP: Duration = if cfg!(test) {
 };
 /// Also notices when Discord has been closed or started.
 const RETRY: Duration = Duration::from_secs(15);
+#[cfg(unix)]
 const REPLY_WAIT: Duration = Duration::from_secs(2);
 /// Discord's "listening" activity.
 const LISTENING: u32 = 2;
@@ -103,6 +105,14 @@ impl Drop for Presence {
     }
 }
 
+#[cfg(windows)]
+fn candidates() -> Vec<PathBuf> {
+    (0..10)
+        .map(|n| PathBuf::from(format!(r"\\.\pipe\discord-ipc-{n}")))
+        .collect()
+}
+
+#[cfg(unix)]
 fn candidates() -> Vec<PathBuf> {
     let mut bases = Vec::new();
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
@@ -135,7 +145,7 @@ fn run(
     let mut wanted_picture: Option<Picture> = None;
     // Connects from the start, so that the settings tell the truth.
     let mut pending = true;
-    let mut stream: Option<UnixStream> = None;
+    let mut stream: Option<Stream> = None;
     let mut last_sent: Option<Instant> = None;
     loop {
         let wait = match last_sent {
@@ -257,13 +267,11 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<UnixStream> {
+fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<Stream> {
     let mut stream = sockets
         .iter()
         .find_map(|path| open(path))
         .context("Discord n'est pas ouvert")?;
-    stream.set_read_timeout(Some(REPLY_WAIT))?;
-    stream.set_write_timeout(Some(REPLY_WAIT))?;
     write_frame(
         &mut stream,
         OP_HANDSHAKE,
@@ -279,11 +287,27 @@ fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<UnixStream> {
     Ok(stream)
 }
 
-fn open(path: &Path) -> Option<UnixStream> {
-    UnixStream::connect(path).ok()
+#[cfg(unix)]
+type Stream = UnixStream;
+#[cfg(windows)]
+type Stream = std::fs::File;
+
+#[cfg(unix)]
+fn open(path: &Path) -> Option<Stream> {
+    let stream = UnixStream::connect(path).ok()?;
+    stream.set_read_timeout(Some(REPLY_WAIT)).ok()?;
+    stream.set_write_timeout(Some(REPLY_WAIT)).ok()?;
+    Some(stream)
 }
 
-fn write_frame(stream: &mut UnixStream, op: u32, payload: &Value) -> Result<()> {
+/// Discord's named pipes open like files. They have no timeouts: a stuck Discord can
+/// only hold this thread, never playback.
+#[cfg(windows)]
+fn open(path: &Path) -> Option<Stream> {
+    std::fs::OpenOptions::new().read(true).write(true).open(path).ok()
+}
+
+fn write_frame(stream: &mut Stream, op: u32, payload: &Value) -> Result<()> {
     let body = payload.to_string();
     let mut frame = Vec::with_capacity(body.len() + 8);
     frame.extend_from_slice(&op.to_le_bytes());
@@ -293,7 +317,7 @@ fn write_frame(stream: &mut UnixStream, op: u32, payload: &Value) -> Result<()> 
     Ok(())
 }
 
-fn read_frame(stream: &mut UnixStream) -> Result<(u32, Value)> {
+fn read_frame(stream: &mut Stream) -> Result<(u32, Value)> {
     let mut header = [0; 8];
     stream.read_exact(&mut header)?;
     let op = u32::from_le_bytes(header[..4].try_into()?);
@@ -356,7 +380,7 @@ pub fn valid_client_id(text: &str) -> Option<String> {
     (text.len() >= 15 && text.chars().all(|c| c.is_ascii_digit())).then(|| text.to_owned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
