@@ -40,7 +40,15 @@ Un lecteur multi-source en Rust et GPUI, sans Electron : ta bibliothèque, ton s
 
 > Le dépôt est privé : il faut un compte qui y a accès et [GitHub CLI](https://cli.github.com) connecté (`gh auth login`).
 
-### Avec la version compilée
+### En une commande
+
+```bash
+gh api -H 'Accept: application/vnd.github.raw' repos/dontleteuwatchyou/onde/contents/install.sh | sh
+```
+
+Le script télécharge la dernière version, vérifie l'archive et installe Onde pour ton utilisateur, sans `sudo`. Onde apparaît aussi dans ton lanceur d'applications. Pour le retirer, lance `sh install.sh --uninstall`.
+
+### Avec la version compilée, étape par étape
 
 Compilée sous Arch Linux pour x86_64. Sur une distribution avec une glibc plus ancienne, compile depuis les sources.
 
