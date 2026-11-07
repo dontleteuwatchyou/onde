@@ -202,6 +202,9 @@ impl Onde {
         let finished = batch.done + failed;
         let fraction = (finished as f32 / batch.total.max(1) as f32).clamp(0., 1.);
         let mut summary = format!("Telegram · {} : {} / {} reçus", batch.name, batch.done, batch.total);
+        if batch.present > 0 {
+            summary.push_str(&format!(" · {} déjà présents", batch.present));
+        }
         if failed > 0 {
             summary.push_str(&format!(" · {failed} en échec"));
         }
