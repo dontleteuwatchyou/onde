@@ -224,6 +224,16 @@ class BridgeTests(unittest.TestCase):
             finally:
                 os.close(fd)
 
+    def test_settings_route_leads_to_the_quality(self):
+        menu = lambda *labels: [{'key': str(i), 'label': label} for i, label in enumerate(labels)]
+        top = menu('🌐 Langue', '🎧 Qualité audio', '❌ Fermer')
+        self.assertEqual(bridge.settings_choice(top, 'flac', set()), ('open', top[1]))
+        self.assertIsNone(bridge.settings_choice(top, 'flac', {'1'}))
+        qualities = menu('MP3 128', 'MP3 320', 'FLAC ✅')
+        self.assertEqual(bridge.settings_choice(qualities, 'flac', set()), ('pick', qualities[2]))
+        self.assertEqual(bridge.settings_choice(qualities, 'mp3_320', set()), ('pick', qualities[1]))
+        self.assertIsNone(bridge.settings_choice(menu('Aide'), 'flac', set()))
+
     def test_posted_id_reads_the_new_message(self):
         update = type('UpdateMessageID', (), {'id': 77})()
         self.assertEqual(bridge.posted_id(types.SimpleNamespace(updates=[update])), 77)

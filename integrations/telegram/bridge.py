@@ -130,6 +130,26 @@ def expand_link(text):
     return text
 
 
+# Qualities the bot offers in /settings, and how its buttons name them.
+QUALITIES = {'flac': ('flac',), 'mp3_320': ('320',), 'mp3_128': ('128',)}
+QUALITY_NAMES = {'flac': 'FLAC', 'mp3_320': 'MP3 320 kb/s', 'mp3_128': 'MP3 128 kb/s'}
+SETTINGS_ROUTE = ('qualit', 'quality', 'format', 'audio', 'download', 'telechar')
+
+
+def settings_choice(choices, target, tried):
+    """('pick'|'open', choice) for the next button towards the quality, or None."""
+    wanted = QUALITIES[target]
+    for choice in choices:
+        label = ' '.join(words(choice['label']))
+        if any(word in label.split() or word in label for word in wanted):
+            return 'pick', choice
+    for choice in choices:
+        label = ' '.join(words(choice['label']))
+        if choice['key'] not in tried and any(part in label for part in SETTINGS_ROUTE):
+            return 'open', choice
+    return None
+
+
 def track(artists, title):
     artists = [artist.strip() for artist in artists if artist and artist.strip()]
     return {'artists': artists, 'title': (title or '').strip()[:200]}
@@ -674,6 +694,63 @@ async def main():
             # Picture cards would hide the download progress or its failure.
             emit(status='Bot : ' + message.raw_text[:600])
 
+    async def press(message, button):
+        kind = getattr(button, 'type', button)
+        if type(kind).__name__ in ('KeyboardButtonCallback', 'InlineButtonTypeCallback'):
+            try:
+                await asyncio.wait_for(client(functions.messages.GetBotCallbackAnswerRequest(
+                    peer=bot, msg_id=message.id, data=kind.data)), 30)
+            except Exception as error:
+                # The bot often edits the menu without answering the callback in time.
+                if type(error).__name__ not in ('BotResponseTimeoutError', 'TimeoutError'):
+                    raise
+        else:
+            await client.send_message(bot, button.text, parse_mode=None, link_preview=False)
+
+    async def next_menu(floor, seen):
+        """Waits for a bot menu newer than floor, or an edit of one already seen."""
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            await asyncio.sleep(BOT_POLL_SECONDS)
+            for message in await client.get_messages(bot, limit=5):
+                if message.out or message.id <= floor:
+                    continue
+                version = (message.id, getattr(message, 'edit_date', None), message.raw_text)
+                choices = menu_choices(message)
+                if choices and version not in seen:
+                    seen.add(version)
+                    return message, choices
+        return None, []
+
+    async def set_quality(target):
+        nonlocal request, expires
+        name = QUALITY_NAMES[target]
+        emit(buttons=[], status=f'Réglage du bot sur {name}… (le bot peut mettre une minute à répondre)')
+        sent = await client.send_message(bot, '/settings', parse_mode=None, link_preview=False)
+        seen, tried = set(), set()
+        for _ in range(5):
+            message, choices = await next_menu(sent.id - 1, seen)
+            if not message:
+                emit(status='Le bot n’a pas répondu à /settings : réessayer plus tard.')
+                return
+            found = settings_choice(choices, target, tried)
+            if not found:
+                # Unknown menu: let the user finish by hand.
+                menus.clear()
+                for choice in choices:
+                    menus[choice['key']] = (message, choice['button'])
+                request, expires = sent.id, time.monotonic() + 300
+                emit(buttons=[{'key': c['key'], 'label': c['label']} for c in choices],
+                     status=f'Menu du bot inconnu : choisir {name} ci-dessous.')
+                return
+            step, choice = found
+            tried.add(choice['key'])
+            await press(message, choice['button'])
+            if step == 'pick':
+                emit(quality=target, status=f'Bot réglé sur {name} : les prochains morceaux arrivent dans cette qualité.')
+                return
+        emit(status=f'{name} introuvable dans les réglages du bot.')
+
     def queue_results(keys):
         items = []
         for key in keys:
@@ -793,6 +870,16 @@ async def main():
                 emit(status='Bot : ' + answer.message[:600])
         elif action == 'queue':
             queue_results(cmd.get('keys') or [])
+        elif action == 'quality':
+            target = cmd.get('value')
+            if target not in QUALITIES:
+                return
+            if not client or not await client.is_user_authorized():
+                raise ValueError('connection')
+            bot = bot or await client.get_entity('DeezLoad2Bot')
+            if not bot.bot or bot.username.lower() != 'deezload2bot':
+                raise ValueError('bot')
+            await set_quality(target)
         elif action == 'retry':
             items = batch['retry']
             if not client or not bot or not items or (runner and not runner.done()):

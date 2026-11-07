@@ -43,6 +43,8 @@ pub struct State {
     pub files: Vec<String>,
     pub buttons: Vec<MenuButton>,
     pub batch: Batch,
+    /// Set once the bot confirmed a quality from /settings.
+    pub quality: Option<String>,
 }
 
 pub struct Telegram {
@@ -137,6 +139,9 @@ impl Telegram {
                 }
                 if let Some(value) = event.get("qr") {
                     state.qr = serde_json::from_value(value.clone()).unwrap_or_default();
+                }
+                if let Some(value) = event["quality"].as_str() {
+                    state.quality = Some(value.to_owned());
                 }
                 if let Some(value) = event.get("batch") {
                     state.batch = serde_json::from_value(value.clone()).unwrap_or_default();
