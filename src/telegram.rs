@@ -142,6 +142,17 @@ impl Telegram {
         })
     }
 
+    /// Waits for the bridge to let go of the session, for what comes next to use it.
+    pub fn stop(&mut self) {
+        let _ = self.send(json!({"action": "quit"}));
+        for _ in 0..30 {
+            if !self.is_alive() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
     pub fn is_alive(&mut self) -> bool {
         self.child
             .as_mut()
