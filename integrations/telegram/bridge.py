@@ -173,13 +173,38 @@ def deezer_tracks(kind, ident):
 def spotify_tracks(kind, ident):
     # The embed page carries the track list without an account or API key.
     page = fetch(f'https://open.spotify.com/embed/{kind}/{ident}')[1].decode('utf-8', 'replace')
-    match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', page, re.S)
+    match = re.search(r'<script\b[^>]*\bid="__NEXT_DATA__"[^>]*>(.*?)</script>', page, re.S)
     if not match:
-        raise ValueError('page')
-    entity = json.loads(match[1])['props']['pageProps']['state']['data']['entity']
+        raise ValueError('Spotify ne fournit pas les données de cette playlist')
+    data = json.loads(match[1])
+
+    def find_entity(value):
+        if isinstance(value, dict):
+            if isinstance(value.get('trackList'), list):
+                return value
+            for child in value.values():
+                found = find_entity(child)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = find_entity(child)
+                if found is not None:
+                    return found
+        return None
+
+    entity = find_entity(data)
+    if entity is None:
+        raise ValueError('Spotify ne fournit pas la liste des morceaux')
     # "subtitle" lists every artist: "Fuck Leeches, symbiose dona".
-    tracks = [track(re.split(r',\s', item.get('subtitle') or ''), item.get('title'))
-              for item in entity.get('trackList', [])]
+    tracks = []
+    for item in entity['trackList']:
+        if not isinstance(item, dict):
+            continue
+        subtitle = item.get('subtitle')
+        artists = re.split(r',\s', subtitle) if isinstance(subtitle, str) else []
+        title = item.get('title')
+        tracks.append(track(artists, title if isinstance(title, str) else ''))
     return entity.get('name') or entity.get('title'), tracks
 
 
@@ -796,7 +821,8 @@ async def main():
                 try:
                     playlist = await asyncio.wait_for(asyncio.to_thread(playlist_tracks, text), 180)
                 except Exception as error:
-                    emit(status=f'Playlist illisible ({type(error).__name__}) : lien public requis.')
+                    detail = f': {error}' if isinstance(error, AttributeError) else ''
+                    emit(status=f'Playlist illisible ({type(error).__name__}{detail}) : lien public requis.')
                     return
                 if playlist is not None:
                     name, tracks = playlist
@@ -928,7 +954,8 @@ async def main():
                 await client.disconnect()
                 client = None
                 emit(connected=False)
-            emit(status=f'Échec Telegram ({type(error).__name__}) : vérifier réseau, configuration, session et dossier. Aucun nouvel essai automatique.', qr=[])
+            detail = f': {error}' if isinstance(error, AttributeError) else ''
+            emit(status=f'Échec Telegram ({type(error).__name__}{detail}) : vérifier réseau, configuration, session et dossier. Aucun nouvel essai automatique.', qr=[])
         finally:
             emit(busy=False)
 
