@@ -185,8 +185,8 @@ Onde n'a ni compte, ni pisteur, ni télémétrie. Seules ces fonctions contacten
 | Telegram activé | Tes recherches et les résultats choisis | Telegram et @DeezLoad2Bot |
 | Discord activé | Titre, artiste, album | Discord |
 | Recherche de pochette pour Discord | Artiste, album, titre | Apple Music, puis Deezer |
-| Pochette introuvable | La pochette seule, réduite, pendant 24 h | litterbox.catbox.moe |
-| « Héberger toutes les pochettes » activé | Toutes les pochettes, réduites, **sans suppression possible** | catbox.moe |
+| Pochette introuvable | La pochette seule, réduite, publique ; moins de 1 Mo, sans expiration | img402.dev |
+| « Héberger toutes les pochettes » activé | Toutes les pochettes, réduites, publiques ; moins de 1 Mo, sans expiration | img402.dev |
 
 Les images hébergées sont visibles par toute personne qui a leur lien.
 

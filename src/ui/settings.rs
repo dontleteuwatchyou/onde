@@ -352,7 +352,7 @@ impl Onde {
                 div()
                     .text_size(px(13.))
                     .text_color(palette.tx2)
-                    .child("Affiche le morceau en cours sur ton profil, avec son temps. Discord reçoit le titre, l’artiste et l’album tant que c’est activé. Pour la pochette, Onde cherche l’artiste, l’album et le titre sur Apple Music, puis Deezer. S’ils ne trouvent rien, la pochette seule part 24 h sur litterbox.catbox.moe, visible par qui a le lien."),
+                    .child("Affiche le morceau en cours sur ton profil, avec son temps. Discord reçoit le titre, l’artiste et l’album tant que c’est activé. Pour la pochette, Onde cherche l’artiste, l’album et le titre sur Apple Music, puis Deezer. S’ils ne trouvent rien, la pochette seule, réduite, est envoyée sur img402.dev. Elle est publique et n’expire pas si elle fait moins de 1 Mo."),
             )
             .child(
                 div()
@@ -394,7 +394,7 @@ impl Onde {
                 div()
                     .text_size(px(13.))
                     .text_color(palette.tx2)
-                    .child("Envoie les pochettes de la bibliothèque sur catbox.moe, pour que Discord les affiche tout de suite. Elles y restent, visibles par qui a le lien, et ne peuvent pas être supprimées ensuite. Couper le réglage arrête les envois, pas ce qui est déjà en ligne."),
+                    .child("Envoie les pochettes réduites de la bibliothèque sur img402.dev, pour que Discord les affiche tout de suite. Les images de moins de 1 Mo sont publiques et n’expirent pas. Couper le réglage arrête les envois, pas ce qui est déjà en ligne."),
             )
     }
 
