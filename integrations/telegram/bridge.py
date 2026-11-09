@@ -18,8 +18,8 @@ MAX_SIZE = 512 * 1024 * 1024
 # The bot edits the audio into the posted result: seconds to a minute, sometimes more.
 BOT_PREPARE_SECONDS = 180
 BOT_POLL_SECONDS = 1.5
-# Results the bot prepares at the same time: more would only queue up on its side.
-PARALLEL = 3
+# Wait for each audio file before asking the bot to prepare the next one.
+PARALLEL = 1
 # A busy bot answers a search with nothing, and Telegram keeps that empty answer
 # for a while: failed tracks are tried again by themselves, after a pause.
 AUTO_RETRIES = 2
