@@ -16,7 +16,6 @@ const PAUSE: Duration = if cfg!(test) {
 } else {
     Duration::from_secs(1)
 };
-const FAILURES_BEFORE_GIVING_UP: usize = 3;
 
 /// Album key → address. Written out at each change, as hosting can't be undone
 /// and shouldn't be done twice.
@@ -85,7 +84,7 @@ impl Links {
 pub struct Hosting {
     total: usize,
     done: Arc<AtomicUsize>,
-    failed: Arc<AtomicBool>,
+    failed: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
 }
 
@@ -103,12 +102,11 @@ impl Hosting {
     ) -> Self {
         let total = jobs.len();
         let done = Arc::new(AtomicUsize::new(0));
-        let failed = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let (shared_done, shared_failed, shared_stop) =
             (done.clone(), failed.clone(), stop.clone());
         std::thread::spawn(move || {
-            let mut failures = 0;
             for (key, picture) in jobs {
                 if shared_stop.load(Ordering::Relaxed) {
                     return;
@@ -118,14 +116,11 @@ impl Hosting {
                     match upload(&bytes) {
                         Some(url) => {
                             links.insert(key, url);
-                            failures = 0;
                         }
                         None => {
-                            failures += 1;
-                            if failures >= FAILURES_BEFORE_GIVING_UP {
-                                shared_failed.store(true, Ordering::Relaxed);
-                                return;
-                            }
+                            // A transient refusal must not strand every cover
+                            // that comes after this one in the library.
+                            shared_failed.fetch_add(1, Ordering::Relaxed);
                         }
                     }
                     std::thread::sleep(PAUSE);
@@ -143,11 +138,9 @@ impl Hosting {
 
     pub fn describe(&self) -> String {
         let done = self.done.load(Ordering::Relaxed);
-        if self.failed.load(Ordering::Relaxed) {
-            format!(
-                "Arrêté à {done} sur {} : l’hébergeur ne répond pas",
-                self.total
-            )
+        let failed = self.failed.load(Ordering::Relaxed);
+        if done >= self.total && failed > 0 {
+            format!("Terminé : {failed} pochette(s) non hébergée(s)")
         } else if done >= self.total {
             "Toutes hébergées".to_owned()
         } else {
@@ -201,8 +194,9 @@ mod tests {
         let links = Arc::new(Links::in_memory());
         let jobs = (0..9).map(|n| (n.to_string(), picture(true))).collect();
         let hosting = Hosting::start(jobs, links, refused);
-        wait_until(|| hosting.failed.load(Ordering::Relaxed));
-        assert!(hosting.describe().contains("ne répond pas"));
+        wait_until(|| hosting.done.load(Ordering::Relaxed) == 9);
+        assert_eq!(hosting.failed.load(Ordering::Relaxed), 9);
+        assert!(hosting.describe().contains("9 pochette(s) non hébergée(s)"));
     }
 
     #[test]
