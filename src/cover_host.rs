@@ -30,7 +30,11 @@ impl Links {
         let known = path
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|content| serde_json::from_str(&content).ok())
+            .and_then(|content| serde_json::from_str::<HashMap<String, String>>(&content).ok())
+            .map(|mut known| {
+                known.retain(|_, url| crate::online_cover::lasts(url));
+                known
+            })
             .unwrap_or_default();
         Self {
             known: Mutex::new(known),
@@ -180,7 +184,7 @@ mod tests {
     }
 
     fn refused(_: &[u8]) -> Result<String, String> {
-        Err("Catbox indisponible".into())
+        Err("img402 indisponible".into())
     }
 
     #[test]
@@ -204,7 +208,7 @@ mod tests {
         let hosting = Hosting::start(jobs, links, refused);
         wait_until(|| hosting.done.load(Ordering::Relaxed) == 9);
         assert_eq!(hosting.failed.load(Ordering::Relaxed), 9);
-        assert!(hosting.describe().contains("Catbox indisponible"));
+        assert!(hosting.describe().contains("img402 indisponible"));
     }
 
     #[test]
