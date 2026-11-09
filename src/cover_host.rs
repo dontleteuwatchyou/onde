@@ -16,7 +16,6 @@ const PAUSE: Duration = if cfg!(test) {
 } else {
     Duration::from_secs(1)
 };
-const FAILURES_BEFORE_GIVING_UP: usize = 3;
 
 /// Album key → address. Written out at each change, as hosting can't be undone
 /// and shouldn't be done twice.
@@ -31,7 +30,11 @@ impl Links {
         let known = path
             .as_ref()
             .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|content| serde_json::from_str(&content).ok())
+            .and_then(|content| serde_json::from_str::<HashMap<String, String>>(&content).ok())
+            .map(|mut known| {
+                known.retain(|_, url| crate::online_cover::lasts(url));
+                known
+            })
             .unwrap_or_default();
         Self {
             known: Mutex::new(known),
@@ -85,7 +88,8 @@ impl Links {
 pub struct Hosting {
     total: usize,
     done: Arc<AtomicUsize>,
-    failed: Arc<AtomicBool>,
+    failed: Arc<AtomicUsize>,
+    last_error: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -99,15 +103,16 @@ impl Hosting {
     pub fn start(
         jobs: Vec<(String, Picture)>,
         links: Arc<Links>,
-        upload: fn(&[u8]) -> Option<String>,
+        upload: fn(&[u8]) -> Result<String, String>,
     ) -> Self {
         let total = jobs.len();
         let done = Arc::new(AtomicUsize::new(0));
-        let failed = Arc::new(AtomicBool::new(false));
+        let failed = Arc::new(AtomicUsize::new(0));
+        let last_error = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
-        let (shared_done, shared_failed, shared_stop) = (done.clone(), failed.clone(), stop.clone());
+        let (shared_done, shared_failed, shared_last_error, shared_stop) =
+            (done.clone(), failed.clone(), last_error.clone(), stop.clone());
         std::thread::spawn(move || {
-            let mut failures = 0;
             for (key, picture) in jobs {
                 if shared_stop.load(Ordering::Relaxed) {
                     return;
@@ -115,16 +120,14 @@ impl Hosting {
                 // A track without a picture has nothing to host.
                 if let Some(bytes) = picture() {
                     match upload(&bytes) {
-                        Some(url) => {
+                        Ok(url) => {
                             links.insert(key, url);
-                            failures = 0;
                         }
-                        None => {
-                            failures += 1;
-                            if failures >= FAILURES_BEFORE_GIVING_UP {
-                                shared_failed.store(true, Ordering::Relaxed);
-                                return;
-                            }
+                        Err(error) => {
+                            // A transient refusal must not strand every cover
+                            // that comes after this one in the library.
+                            shared_failed.fetch_add(1, Ordering::Relaxed);
+                            *shared_last_error.lock().unwrap() = Some(error);
                         }
                     }
                     std::thread::sleep(PAUSE);
@@ -136,14 +139,20 @@ impl Hosting {
             total,
             done,
             failed,
+            last_error,
             stop,
         }
     }
 
     pub fn describe(&self) -> String {
         let done = self.done.load(Ordering::Relaxed);
-        if self.failed.load(Ordering::Relaxed) {
-            format!("Arrêté à {done} sur {} : l’hébergeur ne répond pas", self.total)
+        let failed = self.failed.load(Ordering::Relaxed);
+        if done >= self.total && failed > 0 {
+            let reason = self.last_error.lock().unwrap();
+            match reason.as_deref() {
+                Some(reason) => format!("Terminé : {failed} non hébergée(s) — {reason}"),
+                None => format!("Terminé : {failed} pochette(s) non hébergée(s)"),
+            }
         } else if done >= self.total {
             "Toutes hébergées".to_owned()
         } else {
@@ -170,18 +179,21 @@ mod tests {
         Box::new(move || present.then(|| b"image".to_vec()))
     }
 
-    fn hosted(_: &[u8]) -> Option<String> {
-        Some("https://hote/a.jpg".into())
+    fn hosted(_: &[u8]) -> Result<String, String> {
+        Ok("https://hote/a.jpg".into())
     }
 
-    fn refused(_: &[u8]) -> Option<String> {
-        None
+    fn refused(_: &[u8]) -> Result<String, String> {
+        Err("img402 indisponible".into())
     }
 
     #[test]
     fn hosts_what_has_a_picture_and_keeps_the_link() {
         let links = Arc::new(Links::in_memory());
-        let jobs = vec![("a".to_owned(), picture(true)), ("b".to_owned(), picture(false))];
+        let jobs = vec![
+            ("a".to_owned(), picture(true)),
+            ("b".to_owned(), picture(false)),
+        ];
         let hosting = Hosting::start(jobs, links.clone(), hosted);
         wait_until(|| hosting.done.load(Ordering::Relaxed) == 2);
         assert_eq!(links.get("a").as_deref(), Some("https://hote/a.jpg"));
@@ -194,8 +206,9 @@ mod tests {
         let links = Arc::new(Links::in_memory());
         let jobs = (0..9).map(|n| (n.to_string(), picture(true))).collect();
         let hosting = Hosting::start(jobs, links, refused);
-        wait_until(|| hosting.failed.load(Ordering::Relaxed));
-        assert!(hosting.describe().contains("ne répond pas"));
+        wait_until(|| hosting.done.load(Ordering::Relaxed) == 9);
+        assert_eq!(hosting.failed.load(Ordering::Relaxed), 9);
+        assert!(hosting.describe().contains("img402 indisponible"));
     }
 
     #[test]

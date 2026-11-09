@@ -3,10 +3,11 @@
 use gpui::{Div, FontWeight, linear_color_stop, linear_gradient};
 
 use super::*;
-use crate::discord::{Activity, Presence, Status, valid_client_id};
 use crate::cover_host::Hosting;
-use crate::online_cover::{Picture, upload_lasting};
-use crate::theme::THEMES;
+use crate::discord::{Activity, Presence, Status, valid_client_id};
+use crate::online_cover::{Picture, upload_lasting_detailed};
+use crate::theme::rad;
+use crate::theme::{DENSITIES, LAYOUTS, ROUNDINGS, THEMES};
 
 /// Seconds a track's start may move before Discord is told: more means a seek.
 const PRESENCE_DRIFT: i64 = 3;
@@ -40,7 +41,7 @@ fn card() -> Div {
         .flex_col()
         .gap_2()
         .p_4()
-        .rounded(px(16.))
+        .rounded(rad(16.))
         .bg(pal().rise)
 }
 
@@ -66,6 +67,142 @@ impl Onde {
         set_palette(Palette::named(name));
         self.save_settings(|settings| settings.theme = Some(name.to_owned()));
         cx.notify();
+    }
+
+    fn change_look(
+        &mut self,
+        change: impl FnOnce(&mut Look, &mut config::Config),
+        cx: &mut Context<Self>,
+    ) {
+        let mut current = look();
+        self.save_settings(|settings| change(&mut current, settings));
+        set_look(current);
+        cx.notify();
+    }
+
+    fn render_look(&mut self, cx: &mut Context<Self>) -> Div {
+        let palette = pal();
+        let current = look();
+        let mut layouts = div().flex().flex_wrap().gap_3();
+        for (index, (layout, name, what)) in LAYOUTS.into_iter().enumerate() {
+            let on = current.layout == layout;
+            layouts = layouts.child(
+                div()
+                    .id(("layout", index))
+                    .w(px(220.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_3()
+                    .rounded(rad(16.))
+                    .bg(if on { palette.rise2 } else { palette.rise })
+                    .when(on, |card| card.border_1().border_color(palette.spark))
+                    .cursor_pointer()
+                    .hover(|card| card.bg(pal().rise2))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.change_look(
+                            |look, settings| {
+                                look.layout = layout;
+                                settings.layout = Some(name.to_owned());
+                            },
+                            cx,
+                        );
+                    }))
+                    .child(layout_sketch(layout, on))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .text_color(palette.tx2)
+                            .child(what),
+                    ),
+            );
+        }
+        let mut rounding = div().flex().gap_2();
+        for (index, (name, value)) in ROUNDINGS.into_iter().enumerate() {
+            rounding = rounding.child(
+                chip(("rounding", index), name, current.rounding == value).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.change_look(
+                            |look, settings| {
+                                look.rounding = value;
+                                settings.rounding = Some(name.to_owned());
+                            },
+                            cx,
+                        );
+                    },
+                )),
+            );
+        }
+        let mut density = div().flex().gap_2();
+        for (index, (name, value)) in DENSITIES.into_iter().enumerate() {
+            density = density.child(
+                chip(("density", index), name, current.density == value).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.change_look(
+                            |look, settings| {
+                                look.density = value;
+                                settings.density = Some(name.to_owned());
+                            },
+                            cx,
+                        );
+                    },
+                )),
+            );
+        }
+        let covers = div()
+            .flex()
+            .gap_2()
+            .child(
+                chip("covers-square", "Carrées", !current.round_covers).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.change_look(
+                            |look, settings| {
+                                look.round_covers = false;
+                                settings.round_covers = false;
+                            },
+                            cx,
+                        );
+                    },
+                )),
+            )
+            .child(
+                chip("covers-round", "Rondes", current.round_covers).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.change_look(
+                            |look, settings| {
+                                look.round_covers = true;
+                                settings.round_covers = true;
+                            },
+                            cx,
+                        );
+                    },
+                )),
+            );
+        let row = |label: &'static str, choices: Div| {
+            div()
+                .flex()
+                .items_center()
+                .gap_4()
+                .child(
+                    div()
+                        .w(px(120.))
+                        .text_size(px(13.))
+                        .text_color(pal().tx2)
+                        .child(label),
+                )
+                .child(choices)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(h2("Interface"))
+            .child(layouts)
+            .child(row("Arrondis", rounding))
+            .child(row("Densité", density))
+            .child(row("Pochettes", covers))
     }
 
     pub(super) fn set_visual(&mut self, visual: Visual, cx: &mut Context<Self>) {
@@ -130,7 +267,7 @@ impl Onde {
         self.hosting = Some(Hosting::start(
             jobs,
             self.cover_links.clone(),
-            upload_lasting,
+            upload_lasting_detailed,
         ));
     }
 
@@ -171,9 +308,10 @@ impl Onde {
         if same {
             return;
         }
-        let picture = track.cloned().zip(self.source.clone()).map(|(track, music)| {
-            Box::new(move || music.cover(&track).ok().flatten()) as Picture
-        });
+        let picture = track
+            .cloned()
+            .zip(self.source.clone())
+            .map(|(track, music)| Box::new(move || music.cover(&track).ok().flatten()) as Picture);
         presence.show(
             track.map(|track| Activity {
                 title: track.title.clone(),
@@ -214,7 +352,7 @@ impl Onde {
                 div()
                     .text_size(px(13.))
                     .text_color(palette.tx2)
-                    .child("Affiche le morceau en cours sur ton profil, avec son temps. Discord reçoit le titre, l’artiste et l’album tant que c’est activé. Pour la pochette, Onde cherche l’artiste, l’album et le titre sur Apple Music, puis Deezer. S’ils ne trouvent rien, la pochette seule part 24 h sur litterbox.catbox.moe, visible par qui a le lien."),
+                    .child("Affiche le morceau en cours sur ton profil, avec son temps. Discord reçoit le titre, l’artiste et l’album tant que c’est activé. Pour la pochette, Onde cherche l’artiste, l’album et le titre sur Apple Music, puis Deezer. S’ils ne trouvent rien, la pochette seule, réduite, est envoyée sur img402.dev. Elle est publique et n’expire pas si elle fait moins de 1 Mo."),
             )
             .child(
                 div()
@@ -256,7 +394,7 @@ impl Onde {
                 div()
                     .text_size(px(13.))
                     .text_color(palette.tx2)
-                    .child("Envoie les pochettes de la bibliothèque sur catbox.moe, pour que Discord les affiche tout de suite. Elles y restent, visibles par qui a le lien, et ne peuvent pas être supprimées ensuite. Couper le réglage arrête les envois, pas ce qui est déjà en ligne."),
+                    .child("Envoie les pochettes réduites de la bibliothèque sur img402.dev, pour que Discord les affiche tout de suite. Les images de moins de 1 Mo sont publiques et n’expirent pas. Couper le réglage arrête les envois, pas ce qui est déjà en ligne."),
             )
     }
 
@@ -277,12 +415,7 @@ impl Onde {
             .and_then(|source| source.folder().map(|path| path.to_path_buf()));
         let server_open = self.source.is_some() && folder_open.is_none();
         let count = self.queue.tracks.len();
-        let detail = |text: String| {
-            div()
-                .text_size(px(13.))
-                .text_color(palette.tx2)
-                .child(text)
-        };
+        let detail = |text: String| div().text_size(px(13.)).text_color(palette.tx2).child(text);
         let folder_text = match (&folder_open, &settings.music_folder) {
             (Some(folder), _) => format!("{} · {count} morceaux", folder.display()),
             (None, Some(folder)) => folder.display().to_string(),
@@ -366,7 +499,7 @@ impl Onde {
                     .flex_col()
                     .gap_1()
                     .p_3()
-                    .rounded(px(16.))
+                    .rounded(rad(16.))
                     .bg(if on { palette.rise2 } else { palette.rise })
                     .when(on, |card| card.border_1().border_color(palette.spark))
                     .cursor_pointer()
@@ -399,7 +532,7 @@ impl Onde {
                     .child(
                         div()
                             .h(px(64.))
-                            .rounded(px(10.))
+                            .rounded(rad(10.))
                             .border_2()
                             .border_color(if on { palette.spark } else { palette.line })
                             .bg(linear_gradient(
@@ -432,7 +565,11 @@ impl Onde {
                     ),
             );
         }
-        let power = if self.show_visuals { "Activés" } else { "Coupés" };
+        let power = if self.show_visuals {
+            "Activés"
+        } else {
+            "Coupés"
+        };
         div()
             .id("settings")
             .flex_1()
@@ -445,6 +582,7 @@ impl Onde {
             .flex_col()
             .gap_6()
             .child(display("Réglages", 40.))
+            .child(self.render_look(cx))
             .child(
                 div()
                     .flex()
@@ -464,7 +602,14 @@ impl Onde {
                     )
                     .child(visuals_grid),
             )
-            .child(div().flex().flex_col().gap_3().child(h2("Thème")).child(themes))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(h2("Thème"))
+                    .child(themes),
+            )
             .child(self.render_discord(cx))
             .child(self.render_updates(cx))
             .child(
@@ -475,5 +620,89 @@ impl Onde {
                     .child(h2("Raccourcis"))
                     .child(keys),
             )
+    }
+}
+
+/// A tiny drawing of the layout: where the navigation and the player sit.
+fn layout_sketch(layout: Layout, on: bool) -> Div {
+    let palette = pal();
+    let ink = if on { palette.spark } else { palette.tx3 };
+    let block = |w: f32, h: f32| div().w(px(w)).h(px(h)).rounded(px(2.)).bg(alpha(ink, 0.5));
+    let frame = div()
+        .h(px(84.))
+        .mb_1()
+        .p_1p5()
+        .flex()
+        .gap_1()
+        .rounded(rad(10.))
+        .bg(palette.deep);
+    match layout {
+        Layout::Classique => frame
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .children((0..4).map(|_| block(24., 6.))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .gap_1()
+                    .children((0..3).map(|_| block(52., 40.))),
+            )
+            .child(block(184., 8.)),
+        Layout::Verre => frame
+            .child(
+                div()
+                    .w(px(40.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children((0..5).map(|_| block(36., 6.))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .gap_1()
+                            .children((0..3).map(|_| block(40., 46.))),
+                    )
+                    .child(block(140., 8.)),
+            ),
+        Layout::Courant => frame
+            .child(
+                div()
+                    .w(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children((0..5).map(|_| block(10., 8.))),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(block(120., 14.))
+                    .child(block(80., 5.))
+                    .child(div().flex().gap_px().children(
+                        (0..40).map(|i| block(2., 4. + ((i as f32 * 0.6).sin().abs() * 14.))),
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_1()
+                            .children((0..4).map(|_| block(30., 18.))),
+                    ),
+            ),
     }
 }

@@ -14,6 +14,26 @@ pub struct MenuButton {
     pub details: String,
 }
 
+/// Progress of the download queue: selected results or a whole playlist.
+#[derive(Default, Clone, PartialEq, serde::Deserialize)]
+pub struct Batch {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub done: usize,
+    /// Already in the library, so not saved again.
+    #[serde(default)]
+    pub present: usize,
+    #[serde(default)]
+    pub failed: Vec<String>,
+    #[serde(default)]
+    pub current: String,
+    #[serde(default)]
+    pub active: bool,
+}
+
 #[derive(Default, Clone)]
 pub struct State {
     pub connected: bool,
@@ -22,6 +42,9 @@ pub struct State {
     pub qr: Vec<Vec<bool>>,
     pub files: Vec<String>,
     pub buttons: Vec<MenuButton>,
+    pub batch: Batch,
+    /// Set once the bot confirmed a quality from /settings.
+    pub quality: Option<String>,
 }
 
 pub struct Telegram {
@@ -57,7 +80,12 @@ fn api_env(root: &Path) -> Vec<(String, String)> {
             matches!(*key, "ONDE_TELEGRAM_API_ID" | "ONDE_TELEGRAM_API_HASH")
                 && std::env::var_os(key).is_none()
         })
-        .map(|(key, value)| (key.to_owned(), value.trim().trim_matches(['\'', '"']).to_owned()))
+        .map(|(key, value)| {
+            (
+                key.to_owned(),
+                value.trim().trim_matches(['\'', '"']).to_owned(),
+            )
+        })
         .collect()
 }
 
@@ -120,6 +148,12 @@ impl Telegram {
                 if let Some(value) = event.get("qr") {
                     state.qr = serde_json::from_value(value.clone()).unwrap_or_default();
                 }
+                if let Some(value) = event["quality"].as_str() {
+                    state.quality = Some(value.to_owned());
+                }
+                if let Some(value) = event.get("batch") {
+                    state.batch = serde_json::from_value(value.clone()).unwrap_or_default();
+                }
                 if let Some(value) = event["file"].as_str() {
                     state.files.push(value.to_owned());
                 }
@@ -133,6 +167,7 @@ impl Telegram {
             state.busy = false;
             state.qr.clear();
             state.buttons.clear();
+            state.batch.active = false;
             if !state.status.is_empty() {
                 state.status.push_str(" · ");
             }

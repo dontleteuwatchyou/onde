@@ -2,12 +2,11 @@
 
 use std::ops::Range;
 
-use gpui::{
-    BoxShadow, FontWeight, MouseMoveEvent, linear_color_stop, linear_gradient, point,
-};
+use gpui::{BoxShadow, FontWeight, MouseMoveEvent, linear_color_stop, linear_gradient, point};
 
 use super::*;
 use crate::theme::alpha;
+use crate::theme::rad;
 use crate::visuals::{paint_volume, paint_water_line};
 
 const VOLUME_WIDTH: f32 = 112.;
@@ -149,12 +148,11 @@ impl Onde {
                     .flex()
                     .flex_col()
                     .child(
-                        div()
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(track.as_ref().map_or("Aucune lecture".to_owned(), |t| {
-                                t.title.clone()
-                            })),
+                        div().truncate().font_weight(FontWeight::SEMIBOLD).child(
+                            track
+                                .as_ref()
+                                .map_or("Aucune lecture".to_owned(), |t| t.title.clone()),
+                        ),
                     )
                     .child(
                         div()
@@ -175,10 +173,14 @@ impl Onde {
             .when_some(self.queue.current, |now, current| {
                 let liked = self.is_liked(current);
                 now.child(
-                    icon_button("bar-like", if liked { "heart-fill" } else { "heart" }, liked)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_like(current, cx);
-                        })),
+                    icon_button(
+                        "bar-like",
+                        if liked { "heart-fill" } else { "heart" },
+                        liked,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_like(current, cx);
+                    })),
                 )
                 .when(!compact, |now| {
                     now.child(icon_button("bar-add", "listplus", false).on_click(
@@ -205,7 +207,11 @@ impl Onde {
             }])
             .hover(|button| button.opacity(0.9))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_play(cx)))
-            .child(icon(if paused { "play" } else { "pause" }, 22., palette.ink));
+            .child(icon(
+                if paused { "play" } else { "pause" },
+                22.,
+                palette.ink,
+            ));
 
         let transport = div()
             .flex_none()
@@ -248,7 +254,11 @@ impl Onde {
                 row.child(
                     icon_button(
                         "mute",
-                        if self.muted_volume.is_some() { "volx" } else { "vol" },
+                        if self.muted_volume.is_some() {
+                            "volx"
+                        } else {
+                            "vol"
+                        },
                         false,
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
@@ -362,7 +372,7 @@ impl Onde {
                         .mx_4()
                         .mb_2()
                         .p_2()
-                        .rounded(px(10.))
+                        .rounded(rad(10.))
                         .bg(palette.rise)
                         .child(widgets::cover(art.as_ref(), 40., 6.))
                         .child(
@@ -443,8 +453,7 @@ impl Onde {
                                             ),
                                     )
                                     .child(
-                                        mono(format_time(track.duration))
-                                            .text_color(palette.tx3),
+                                        mono(format_time(track.duration)).text_color(palette.tx3),
                                     )
                             })
                             .collect()
@@ -506,9 +515,8 @@ impl Onde {
             .child(div().flex_1());
         for (index, choice) in VISUALS.into_iter().enumerate() {
             pills = pills.child(
-                chip(("fs-visual", index), choice.name(), choice == self.visual).on_click(
-                    cx.listener(move |this, _, _, cx| this.set_visual(choice, cx)),
-                ),
+                chip(("fs-visual", index), choice.name(), choice == self.visual)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_visual(choice, cx))),
             );
         }
 
@@ -555,7 +563,9 @@ impl Onde {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .when(!format.is_empty(), |text| text.child(div().flex().child(tag(format))))
+                        .when(!format.is_empty(), |text| {
+                            text.child(div().flex().child(tag(format)))
+                        })
                         .child(
                             display(title, (width * 0.08).clamp(44., 128.))
                                 .line_clamp(2)

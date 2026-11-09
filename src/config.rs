@@ -31,6 +31,13 @@ pub struct Config {
     pub shuffle: bool,
     /// Never asks GitHub for a new version on its own.
     pub no_update_check: bool,
+    /// What @DeezLoad2Bot was last set to send: "flac", "mp3_320" or "mp3_128".
+    pub telegram_quality: Option<String>,
+    /// "Classique", "Verre" or "Courant".
+    pub layout: Option<String>,
+    pub rounding: Option<String>,
+    pub density: Option<String>,
+    pub round_covers: bool,
 }
 
 fn path() -> Result<PathBuf> {

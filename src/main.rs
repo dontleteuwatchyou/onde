@@ -15,6 +15,7 @@ mod engine;
 mod http_source;
 mod library;
 mod lyrics;
+mod memory;
 mod online_cover;
 mod quality;
 mod queue;
@@ -74,7 +75,10 @@ fn self_update() -> Result<()> {
     };
     println!("Installation d'Onde {}…", found.version);
     update::install(&found)?;
-    println!("Onde {} est installé. Il prendra effet au prochain lancement.", found.version);
+    println!(
+        "Onde {} est installé. Il prendra effet au prochain lancement.",
+        found.version
+    );
     Ok(())
 }
 
@@ -92,6 +96,7 @@ fn run_command(args: &[String]) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    memory::limit_pools();
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned())
@@ -99,7 +104,9 @@ fn main() -> ExitCode {
     let startup = match args.first().map(String::as_str) {
         None => Startup::Empty,
         Some("navidrome") => Startup::Navidrome,
-        Some("navidrome-login" | "navidrome-logout" | "--help" | "-h" | "--update" | "--version") => {
+        Some(
+            "navidrome-login" | "navidrome-logout" | "--help" | "-h" | "--update" | "--version",
+        ) => {
             return match run_command(&args) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
@@ -112,23 +119,25 @@ fn main() -> ExitCode {
             std::env::args_os().nth(1).unwrap_or_default(),
         )),
     };
-    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
-        if let Err(error) = assets::load_fonts(cx) {
-            eprintln!("Polices non chargées : {error:#}");
-        }
-        ui::bind_keys(cx);
-        let bounds = Bounds::centered(None, size(px(1180.), px(780.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                app_id: Some("onde".into()),
-                ..Default::default()
-            },
-            move |window, cx| cx.new(|cx| ui::Onde::new(startup, window, cx)),
-        )
-        .expect("ouverture de la fenêtre");
-        cx.on_window_closed(|cx| cx.quit()).detach();
-        cx.activate(true);
-    });
+    Application::new()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            if let Err(error) = assets::load_fonts(cx) {
+                eprintln!("Polices non chargées : {error:#}");
+            }
+            ui::bind_keys(cx);
+            let bounds = Bounds::centered(None, size(px(1180.), px(780.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    app_id: Some("onde".into()),
+                    ..Default::default()
+                },
+                move |window, cx| cx.new(|cx| ui::Onde::new(startup, window, cx)),
+            )
+            .expect("ouverture de la fenêtre");
+            cx.on_window_closed(|cx| cx.quit()).detach();
+            cx.activate(true);
+        });
     ExitCode::SUCCESS
 }

@@ -1,7 +1,7 @@
 //! Finds a public address for a cover, because Discord only shows images it can
 //! fetch itself. The artist and the album or title go to Apple's search and then
-//! to Deezer's. When they know nothing of the track, the cover alone goes to a
-//! temporary image host: reduced, so nothing else from the file comes along.
+//! to Deezer's. When they know nothing of the track, a reduced cover goes to
+//! img402, as do covers hosted ahead of time.
 
 use std::io::Cursor;
 use std::time::Duration;
@@ -17,11 +17,14 @@ const TIMEOUT: Duration = Duration::from_secs(6);
 const LONGEST_URL: usize = 256;
 const RESULTS: &str = "25";
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
-const TEMPORARY_HOST: &str = "https://litterbox.catbox.moe/resources/internals/api.php";
-const TEMPORARY_LINKS: &str = "litter.catbox.moe";
-const LASTING_HOST: &str = "https://catbox.moe/user/api.php";
-const UPLOAD_LIFETIME: &str = "24h";
+const UPLOAD_USER_AGENT: &str = concat!(
+    "Onde/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/dontleteuwatchyou/onde)"
+);
+const IMAGE_HOST: &str = "https://img402.dev/api/free";
 const UPLOADED_SIDE: u32 = 512;
+const MAX_PERMANENT_SIZE: usize = 1024 * 1024;
 const BOUNDARY: &str = "----OndeCoverBoundary";
 const COUNTRY: &str = "FR";
 /// What separates artists in a tag, in lower case.
@@ -44,7 +47,10 @@ pub fn find_or_upload(
     title: &str,
     picture: Option<Picture>,
 ) -> Option<String> {
-    find(artist, album, title).or_else(|| upload(TEMPORARY_HOST, Some(UPLOAD_LIFETIME), &reduced(&picture?()?)?))
+    find(artist, album, title).or_else(|| {
+        let jpeg = reduced(&picture?()?)?;
+        upload(&jpeg).ok()
+    })
 }
 
 /// A square JPEG: small to send, and without what the original carried.
@@ -58,30 +64,23 @@ fn reduced(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
-/// For hosting ahead of time: no expiry, and no way to remove it afterwards.
-pub fn upload_lasting(bytes: &[u8]) -> Option<String> {
-    upload(LASTING_HOST, None, &reduced(bytes)?)
+/// Free images at or below 1 MB have no scheduled expiry on img402.
+pub fn upload_lasting_detailed(bytes: &[u8]) -> Result<String, String> {
+    let jpeg = reduced(bytes).ok_or_else(|| "image illisible".to_owned())?;
+    upload_detailed(&jpeg)
 }
 
-/// A link that stays valid is worth remembering. A temporary one is not.
+/// A link that stays valid is worth remembering. Only permanent img402 URLs
+/// are returned by our upload path.
 pub fn lasts(url: &str) -> bool {
-    !url.contains(TEMPORARY_LINKS)
+    url.starts_with("https://i.img402.dev/")
 }
 
-fn upload_body(lifetime: Option<&str>, jpeg: &[u8]) -> Vec<u8> {
+fn upload_body(jpeg: &[u8]) -> Vec<u8> {
     let mut body = Vec::with_capacity(jpeg.len() + 512);
-    let time = lifetime.map(|value| ("time", value));
-    for (name, value) in [Some(("reqtype", "fileupload")), time].into_iter().flatten() {
-        body.extend_from_slice(
-            format!(
-                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-            )
-            .as_bytes(),
-        );
-    }
     body.extend_from_slice(
         format!(
-            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
+            "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n"
         )
         .as_bytes(),
     );
@@ -90,24 +89,61 @@ fn upload_body(lifetime: Option<&str>, jpeg: &[u8]) -> Vec<u8> {
     body
 }
 
-fn upload(address: &str, lifetime: Option<&str>, jpeg: &[u8]) -> Option<String> {
+fn upload(jpeg: &[u8]) -> Result<String, String> {
+    upload_detailed(jpeg)
+}
+
+fn upload_detailed(jpeg: &[u8]) -> Result<String, String> {
+    if jpeg.len() > MAX_PERMANENT_SIZE {
+        return Err("image réduite supérieure à 1 Mo".to_owned());
+    }
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(UPLOAD_TIMEOUT))
+            .http_status_as_error(false)
             .build(),
     );
-    let reply = agent
-        .post(address)
+    let mut response = agent
+        .post(IMAGE_HOST)
+        .header("User-Agent", UPLOAD_USER_AGENT)
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .send(&upload_body(lifetime, jpeg)[..])
-        .ok()?
+        .send(&upload_body(jpeg)[..])
+        .map_err(|error| format!("connexion img402 : {error}"))?;
+    let status = response.status();
+    let reply = response
         .body_mut()
         .read_to_string()
-        .ok()?;
-    usable(reply.trim().to_owned())
+        .map_err(|error| format!("réponse img402 illisible : {error}"))?;
+    if !(200..300).contains(&status.as_u16()) {
+        return Err(format!("img402 HTTP {status}: {}", short(&reply)));
+    }
+    let value: Value = serde_json::from_str(&reply)
+        .map_err(|_| format!("réponse img402 invalide: {}", short(&reply)))?;
+    if value.get("expiresAt") != Some(&Value::Null) {
+        return Err("img402 ne garantit pas l’expiration de cette image".to_owned());
+    }
+    let url = value["url"].as_str().unwrap_or_default().to_owned();
+    if lasts(&url) && usable(url.clone()).is_some() {
+        Ok(url)
+    } else {
+        Err(format!("URL img402 invalide: {}", short(&url)))
+    }
+}
+
+fn short(message: &str) -> String {
+    let message = message.trim();
+    let mut short: String = message.chars().take(90).collect();
+    if message.chars().count() > 90 {
+        short.push('…');
+    }
+    if short.is_empty() {
+        "réponse vide".to_owned()
+    } else {
+        short
+    }
 }
 
 fn find(artist: &str, album: &str, title: &str) -> Option<String> {
@@ -180,7 +216,13 @@ fn pick_apple(reply: &Value, kind: Kind, artist: &str, name: &str) -> Option<Str
             same_artist(result["artistName"].as_str(), artist)
                 && same_name(result[field].as_str(), name)
         })
-        .find_map(|result| usable(result["artworkUrl100"].as_str()?.replace("100x100bb", "512x512bb")))
+        .find_map(|result| {
+            usable(
+                result["artworkUrl100"]
+                    .as_str()?
+                    .replace("100x100bb", "512x512bb"),
+            )
+        })
 }
 
 fn pick_deezer(reply: &Value, kind: Kind, artist: &str, name: &str) -> Option<String> {
@@ -294,26 +336,25 @@ mod tests {
         picture.write_to(&mut png, ImageFormat::Png).unwrap();
         let jpeg = reduced(&png.into_inner()).unwrap();
         let sent = image::load_from_memory(&jpeg).unwrap();
-        assert_eq!((sent.width(), sent.height()), (UPLOADED_SIDE, UPLOADED_SIDE));
+        assert_eq!(
+            (sent.width(), sent.height()),
+            (UPLOADED_SIDE, UPLOADED_SIDE)
+        );
         assert_eq!(reduced(b"<html>"), None);
     }
 
     #[test]
     fn the_upload_form_holds_its_fields_and_the_image() {
-        let lasting = String::from_utf8(upload_body(None, b"IMAGE")).unwrap();
-        assert!(!lasting.contains("name=\"time\""));
-        let body = upload_body(Some("24h"), b"IMAGE");
-        let text = String::from_utf8(body).unwrap();
-        assert!(text.contains("name=\"reqtype\"\r\n\r\nfileupload\r\n"));
-        assert!(text.contains("name=\"time\"\r\n\r\n24h\r\n"));
+        let text = String::from_utf8(upload_body(b"IMAGE")).unwrap();
+        assert!(text.contains("name=\"image\"; filename=\"cover.jpg\""));
         assert!(text.contains("filename=\"cover.jpg\""));
         assert!(text.ends_with(&format!("IMAGE\r\n--{BOUNDARY}--\r\n")));
     }
 
     #[test]
-    fn only_lasting_links_are_worth_remembering() {
+    fn only_permanent_img402_links_are_worth_remembering() {
+        assert!(lasts("https://i.img402.dev/a.jpg"));
         assert!(!lasts("https://litter.catbox.moe/a.jpg"));
-        assert!(lasts("https://files.catbox.moe/a.jpg"));
     }
 
     #[test]
@@ -338,7 +379,10 @@ mod tests {
         let reply = json!({ "data": [
             { "title": "Discovery", "artist": { "name": "Data Punk" }, "cover_big": "https://a" },
         ]});
-        assert_eq!(pick_deezer(&reply, Kind::Album, "Daft Punk", "Discovery"), None);
+        assert_eq!(
+            pick_deezer(&reply, Kind::Album, "Daft Punk", "Discovery"),
+            None
+        );
     }
 
     #[test]
