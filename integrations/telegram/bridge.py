@@ -812,7 +812,8 @@ async def main():
                 return
             folder = str(destination)
             bot = await client.get_entity('DeezLoad2Bot')
-            if not bot.bot or bot.username.lower() != 'deezload2bot':
+            username = (getattr(bot, 'username', None) or '').lower()
+            if not getattr(bot, 'bot', False) or (username and username != 'deezload2bot'):
                 raise ValueError('bot')
             menus.clear()
             request = None
