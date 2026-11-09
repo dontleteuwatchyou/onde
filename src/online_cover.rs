@@ -17,6 +17,11 @@ const TIMEOUT: Duration = Duration::from_secs(6);
 const LONGEST_URL: usize = 256;
 const RESULTS: &str = "25";
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const UPLOAD_USER_AGENT: &str = concat!(
+    "Onde/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/dontleteuwatchyou/onde)"
+);
 const TEMPORARY_HOST: &str = "https://litterbox.catbox.moe/resources/internals/api.php";
 const TEMPORARY_LINKS: &str = "litter.catbox.moe";
 const LASTING_HOST: &str = "https://catbox.moe/user/api.php";
@@ -64,9 +69,10 @@ fn reduced(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(out.into_inner())
 }
 
-/// For hosting ahead of time: no expiry, and no way to remove it afterwards.
-pub fn upload_lasting(bytes: &[u8]) -> Option<String> {
-    upload(LASTING_HOST, None, &reduced(bytes)?)
+/// Hosts a cover permanently and returns why Catbox refused it when it fails.
+pub fn upload_lasting_detailed(bytes: &[u8]) -> Result<String, String> {
+    let jpeg = reduced(bytes).ok_or_else(|| "image illisible".to_owned())?;
+    upload_detailed(LASTING_HOST, None, &jpeg)
 }
 
 /// A link that stays valid is worth remembering. A temporary one is not.
@@ -100,23 +106,49 @@ fn upload_body(lifetime: Option<&str>, jpeg: &[u8]) -> Vec<u8> {
 }
 
 fn upload(address: &str, lifetime: Option<&str>, jpeg: &[u8]) -> Option<String> {
+    upload_detailed(address, lifetime, jpeg).ok()
+}
+
+fn upload_detailed(address: &str, lifetime: Option<&str>, jpeg: &[u8]) -> Result<String, String> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(UPLOAD_TIMEOUT))
+            .http_status_as_error(false)
             .build(),
     );
-    let reply = agent
+    let mut response = agent
         .post(address)
+        .header("User-Agent", UPLOAD_USER_AGENT)
         .header(
             "Content-Type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
         .send(&upload_body(lifetime, jpeg)[..])
-        .ok()?
+        .map_err(|error| format!("connexion Catbox : {error}"))?;
+    let status = response.status();
+    let reply = response
         .body_mut()
         .read_to_string()
-        .ok()?;
-    usable(reply.trim().to_owned())
+        .map_err(|error| format!("réponse Catbox illisible : {error}"))?;
+    if !(200..300).contains(&status.as_u16()) {
+        return Err(format!("Catbox HTTP {status}: {}", short(&reply)));
+    }
+    usable(reply.trim().to_owned()).ok_or_else(|| {
+        format!("réponse Catbox inattendue: {}", short(&reply))
+    })
+}
+
+fn short(message: &str) -> String {
+    let message = message.trim();
+    let mut short: String = message.chars().take(90).collect();
+    if message.chars().count() > 90 {
+        short.push('…');
+    }
+    if short.is_empty() {
+        "réponse vide".to_owned()
+    } else {
+        short
+    }
 }
 
 fn find(artist: &str, album: &str, title: &str) -> Option<String> {

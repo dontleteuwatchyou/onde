@@ -85,6 +85,7 @@ pub struct Hosting {
     total: usize,
     done: Arc<AtomicUsize>,
     failed: Arc<AtomicUsize>,
+    last_error: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
 }
 
@@ -98,14 +99,15 @@ impl Hosting {
     pub fn start(
         jobs: Vec<(String, Picture)>,
         links: Arc<Links>,
-        upload: fn(&[u8]) -> Option<String>,
+        upload: fn(&[u8]) -> Result<String, String>,
     ) -> Self {
         let total = jobs.len();
         let done = Arc::new(AtomicUsize::new(0));
         let failed = Arc::new(AtomicUsize::new(0));
+        let last_error = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
-        let (shared_done, shared_failed, shared_stop) =
-            (done.clone(), failed.clone(), stop.clone());
+        let (shared_done, shared_failed, shared_last_error, shared_stop) =
+            (done.clone(), failed.clone(), last_error.clone(), stop.clone());
         std::thread::spawn(move || {
             for (key, picture) in jobs {
                 if shared_stop.load(Ordering::Relaxed) {
@@ -114,13 +116,14 @@ impl Hosting {
                 // A track without a picture has nothing to host.
                 if let Some(bytes) = picture() {
                     match upload(&bytes) {
-                        Some(url) => {
+                        Ok(url) => {
                             links.insert(key, url);
                         }
-                        None => {
+                        Err(error) => {
                             // A transient refusal must not strand every cover
                             // that comes after this one in the library.
                             shared_failed.fetch_add(1, Ordering::Relaxed);
+                            *shared_last_error.lock().unwrap() = Some(error);
                         }
                     }
                     std::thread::sleep(PAUSE);
@@ -132,6 +135,7 @@ impl Hosting {
             total,
             done,
             failed,
+            last_error,
             stop,
         }
     }
@@ -140,7 +144,11 @@ impl Hosting {
         let done = self.done.load(Ordering::Relaxed);
         let failed = self.failed.load(Ordering::Relaxed);
         if done >= self.total && failed > 0 {
-            format!("Terminé : {failed} pochette(s) non hébergée(s)")
+            let reason = self.last_error.lock().unwrap();
+            match reason.as_deref() {
+                Some(reason) => format!("Terminé : {failed} non hébergée(s) — {reason}"),
+                None => format!("Terminé : {failed} pochette(s) non hébergée(s)"),
+            }
         } else if done >= self.total {
             "Toutes hébergées".to_owned()
         } else {
@@ -167,12 +175,12 @@ mod tests {
         Box::new(move || present.then(|| b"image".to_vec()))
     }
 
-    fn hosted(_: &[u8]) -> Option<String> {
-        Some("https://hote/a.jpg".into())
+    fn hosted(_: &[u8]) -> Result<String, String> {
+        Ok("https://hote/a.jpg".into())
     }
 
-    fn refused(_: &[u8]) -> Option<String> {
-        None
+    fn refused(_: &[u8]) -> Result<String, String> {
+        Err("Catbox indisponible".into())
     }
 
     #[test]
@@ -196,7 +204,7 @@ mod tests {
         let hosting = Hosting::start(jobs, links, refused);
         wait_until(|| hosting.done.load(Ordering::Relaxed) == 9);
         assert_eq!(hosting.failed.load(Ordering::Relaxed), 9);
-        assert!(hosting.describe().contains("9 pochette(s) non hébergée(s)"));
+        assert!(hosting.describe().contains("Catbox indisponible"));
     }
 
     #[test]

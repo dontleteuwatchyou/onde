@@ -5,7 +5,7 @@ use gpui::{Div, FontWeight, linear_color_stop, linear_gradient};
 use super::*;
 use crate::cover_host::Hosting;
 use crate::discord::{Activity, Presence, Status, valid_client_id};
-use crate::online_cover::{Picture, upload_lasting};
+use crate::online_cover::{Picture, upload_lasting_detailed};
 use crate::theme::rad;
 use crate::theme::{DENSITIES, LAYOUTS, ROUNDINGS, THEMES};
 
@@ -267,7 +267,7 @@ impl Onde {
         self.hosting = Some(Hosting::start(
             jobs,
             self.cover_links.clone(),
-            upload_lasting,
+            upload_lasting_detailed,
         ));
     }
 
