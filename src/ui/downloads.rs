@@ -564,25 +564,23 @@ impl Onde {
                 .on_click(cx.listener(move |this, _, _, cx| this.select_source(index, cx))),
             );
         }
-        if Telegram::SUPPORTED {
-            sources = sources.child(
-                row(
-                    "source-telegram".into(),
-                    "Telegram".to_owned(),
-                    String::new(),
-                    state.telegram_selected,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.downloads.telegram_selected = true;
-                    this.downloads.request += 1;
-                    this.downloads.searching = false;
-                    this.downloads.hits.clear();
-                    this.downloads.searched = false;
-                    this.downloads.error = None;
-                    cx.notify();
-                })),
-            );
-        }
+        sources = sources.child(
+            row(
+                "source-telegram".into(),
+                "Telegram".to_owned(),
+                String::new(),
+                state.telegram_selected,
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.downloads.telegram_selected = true;
+                this.downloads.request += 1;
+                this.downloads.searching = false;
+                this.downloads.hits.clear();
+                this.downloads.searched = false;
+                this.downloads.error = None;
+                cx.notify();
+            })),
+        );
         let folder_panel = div()
             .flex()
             .flex_col()

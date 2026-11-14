@@ -62,11 +62,8 @@ fn api_env(root: &Path) -> Vec<(String, String)> {
 }
 
 impl Telegram {
-    /// The bridge relies on Unix file locks and permissions: no Telegram elsewhere.
-    pub const SUPPORTED: bool = cfg!(unix);
-
     pub fn has_session() -> bool {
-        Self::SUPPORTED && root().is_ok_and(|root| root.join("account.session").exists())
+        root().is_ok_and(|root| root.join("account.session").exists())
     }
 
     pub fn start() -> Result<Self> {

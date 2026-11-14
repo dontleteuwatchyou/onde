@@ -1,6 +1,3 @@
-// No console window behind the app; debug builds keep it for their messages.
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 mod analysis;
 mod assets;
 mod catalog;
