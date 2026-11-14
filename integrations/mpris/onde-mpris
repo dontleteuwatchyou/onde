@@ -1,0 +1,464 @@
+#!/usr/bin/env python3
+"""Expose Onde (local music player, no MPRIS) as org.mpris.MediaPlayer2.onde.
+
+Detects the currently playing file through /proc/<pid>/fd, reads tags with
+mutagen, estimates playback position from the file offset, and emits the
+standard MPRIS properties so shells like Serpantinum can list it as a player.
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+from mutagen import File as MutagenFile
+
+BUS_NAME = "org.mpris.MediaPlayer2.onde"
+OBJ_PATH = "/org/mpris/MediaPlayer2"
+IFACE = "org.mpris.MediaPlayer2"
+PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+PROPS_IFACE = "org.freedesktop.DBus.Properties"
+INTROSPECT_XML = """<?xml version="1.0"?>
+<node><interface name="org.freedesktop.DBus.Introspectable">
+<method name="Introspect"><arg name="data" type="s" direction="out"/></method>
+</interface>
+<interface name="org.freedesktop.DBus.Peer">
+<method name="Ping"/>
+<method name="GetMachineId"><arg name="machine_uuid" type="s" direction="out"/></method>
+</interface>
+<interface name="org.freedesktop.DBus.Properties">
+<method name="Get"><arg name="interface" type="s" direction="in"/><arg name="prop" type="s" direction="in"/><arg name="value" type="v" direction="out"/></method>
+<method name="GetAll"><arg name="interface" type="s" direction="in"/><arg name="props" type="a{sv}" direction="out"/></method>
+<method name="Set"><arg name="interface" type="s" direction="in"/><arg name="prop" type="s" direction="in"/><arg name="value" type="v" direction="in"/></method>
+<signal name="PropertiesChanged"><arg name="interface" type="s"/><arg name="changed" type="a{sv}"/><arg name="invalid" type="as"/></signal>
+</interface>
+<interface name="org.mpris.MediaPlayer2">
+<method name="Raise"/>
+<method name="Quit"/>
+<property name="Identity" type="s" access="read"/>
+<property name="DesktopEntry" type="s" access="read"/>
+<property name="Fullscreen" type="b" access="readwrite"/>
+<property name="PlaybackStatus" type="s" access="read"/>
+<property name="LoopStatus" type="s" access="readwrite"/>
+<property name="Rate" type="d" access="readwrite"/>
+<property name="Shuffle" type="b" access="readwrite"/>
+<property name="Metadata" type="a{sv}" access="read"/>
+<property name="Volume" type="d" access="readwrite"/>
+<property name="Position" type="x" access="read"/>
+<property name="MinimumRate" type="d" access="read"/>
+<property name="MaximumRate" type="d" access="read"/>
+<property name="CanGoNext" type="b" access="read"/>
+<property name="CanGoPrevious" type="b" access="read"/>
+<property name="CanPlay" type="b" access="read"/>
+<property name="CanPause" type="b" access="read"/>
+<property name="CanSeek" type="b" access="read"/>
+<property name="CanControl" type="b" access="read"/>
+<property name="CanQuit" type="b" access="read"/>
+<property name="CanRaise" type="b" access="read"/>
+</interface>
+<interface name="org.mpris.MediaPlayer2.Player">
+<method name="Next"/>
+<method name="Previous"/>
+<method name="Pause"/>
+<method name="Play"/>
+<method name="PlayPause"/>
+<method name="Stop"/>
+<method name="Seek"><arg name="offset" type="x"/></method>
+<method name="SetPosition"><arg name="track" type="o"/><arg name="pos" type="x"/></method>
+<method name="OpenUri"><arg name="uri" type="s"/></method>
+<signal name="Seeked"><arg name="Position" type="x"/></signal>
+<property name="PlaybackStatus" type="s" access="read"/>
+<property name="LoopStatus" type="s" access="readwrite"/>
+<property name="Rate" type="d" access="readwrite"/>
+<property name="Shuffle" type="b" access="readwrite"/>
+<property name="Metadata" type="a{sv}" access="read"/>
+<property name="Volume" type="d" access="readwrite"/>
+<property name="Position" type="x" access="read"/>
+<property name="MinimumRate" type="d" access="read"/>
+<property name="MaximumRate" type="d" access="read"/>
+<property name="CanGoNext" type="b" access="read"/>
+<property name="CanGoPrevious" type="b" access="read"/>
+<property name="CanPlay" type="b" access="read"/>
+<property name="CanPause" type="b" access="read"/>
+<property name="CanSeek" type="b" access="read"/>
+<property name="CanControl" type="b" access="read"/>
+<property name="CanQuit" type="b" access="read"/>
+<property name="CanRaise" type="b" access="read"/>
+<property name="Identity" type="s" access="read"/>
+<property name="DesktopEntry" type="s" access="read"/>
+<property name="Fullscreen" type="b" access="readwrite"/>
+</interface>
+</node>"""
+
+CONFIG = Path.home() / ".config/onde/config.json"
+CACHE_DIR = Path.home() / ".cache/onde-mpris"
+AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff", ".ape", ".mka"}
+
+state = {
+    "track": None,          # Path of current file
+    "pos_us": 0,
+    "length_us": 0,
+    "status": "Stopped",    # Playing / Paused / Stopped
+    "metadata": {},
+    "_last_bytes": None,
+    "_last_check": 0.0,
+}
+meta_cache = {}  # path -> (mtime, metadata_dict, length_us)
+art_cache = {}   # path -> art file url
+
+
+def music_folder():
+    try:
+        cfg = json.loads(CONFIG.read_text())
+        return cfg.get("music_folder") or str(Path.home() / "Musique/Onde")
+    except Exception:
+        return str(Path.home() / "Musique/Onde")
+
+
+def onde_pids():
+    try:
+        out = subprocess.run(["pgrep", "-x", "onde"], capture_output=True, text=True, timeout=2)
+        return [int(p) for p in out.stdout.split()]
+    except Exception:
+        return []
+
+
+def current_track():
+    """Return (Path, byte_offset) of the file onde is reading, or (None, 0)."""
+    folder = music_folder()
+    best = None
+    for pid in onde_pids():
+        fd_dir = Path(f"/proc/{pid}/fd")
+        try:
+            fds = list(fd_dir.iterdir())
+        except Exception:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except Exception:
+                continue
+            if not target.startswith(folder):
+                continue
+            p = Path(target)
+            if p.suffix.lower() not in AUDIO_EXTS or not p.is_file():
+                continue
+            try:
+                fdinfo = Path(f"/proc/{pid}/fdinfo/{fd.name}").read_text()
+                m = re.search(r"^pos:\s+(\d+)", fdinfo, re.M)
+                pos = int(m.group(1)) if m else 0
+            except Exception:
+                pos = 0
+            # pick the fd with the largest offset (onde may keep the file open
+            # plus decode buffers); ties -> first seen
+            if best is None or pos > best[1]:
+                best = (p, pos)
+    return best if best else (None, 0)
+
+
+def tags_for(path):
+    try:
+        st = path.stat()
+        key = str(path)
+        if key in meta_cache and meta_cache[key][0] == st.st_mtime:
+            return meta_cache[key][1], meta_cache[key][2]
+    except Exception:
+        return {}, 0
+    meta, length_us = {}, 0
+    try:
+        mf = MutagenFile(str(path))
+        if mf is not None:
+            mf_info = getattr(mf, "info", None)
+            if mf_info is not None and getattr(mf_info, "length", None):
+                length_us = int(mf_info.length * 1_000_000)
+            def first(v):
+                if isinstance(v, (list, tuple)):
+                    v = v[0] if v else ""
+                return str(v).strip() if v else ""
+            title = first(getattr(mf, "title", "")) or path.stem
+            artist = first(getattr(mf, "artist", ""))
+            album = first(getattr(mf, "album", ""))
+            tracknum = getattr(mf, "tracknumber", None) or getattr(mf, "track", None)
+            tracknum = first(tracknum) if tracknum else ""
+            m = {"xesam:title": GLib.Variant("s", title)}
+            if artist:
+                m["xesam:artist"] = GLib.Variant("as", [artist])
+            if album:
+                m["xesam:album"] = GLib.Variant("s", album)
+            m["mpris:length"] = GLib.Variant("x", length_us)
+            track_id = int(hashlib.md5(key.encode()).hexdigest()[:8], 16) % 10**9
+            m["mpris:trackid"] = GLib.Variant("o", f"/org/mpris/MediaPlayer2/onde/Track/{track_id}")
+            m["mpris:artUrl"] = GLib.Variant("s", art_url_for(path, mf))
+            if tracknum:
+                m["xesam:trackNumber"] = GLib.Variant("i", int(re.sub(r"\D", "", tracknum) or 0))
+            meta = m
+    except Exception:
+        pass
+    try:
+        meta_cache[key] = (st.st_mtime, meta, length_us)
+    except Exception:
+        pass
+    return meta, length_us
+
+
+def art_url_for(path, mf):
+    key = str(path)
+    if key in art_cache:
+        return art_cache[key]
+    url = ""
+    try:
+        pictures = getattr(mf, "pictures", None)
+        if pictures:
+            pic = pictures[0]
+            ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(getattr(pic, "mime", ""), ".jpg")
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            art = CACHE_DIR / f"{hashlib.md5(key.encode()).hexdigest()[:12]}{ext}"
+            if not art.exists():
+                art.write_bytes(pic.data)
+            url = art.as_uri()
+    except Exception:
+        pass
+    if not url:
+        # common sidecar names next to the file
+        for name in ("cover.jpg", "folder.jpg", "front.jpg", "cover.png"):
+            cand = path.parent / name
+            if cand.is_file():
+                url = cand.as_uri()
+                break
+    art_cache[key] = url
+    return url
+
+
+def poll():
+    global state
+    track, byte_pos = current_track()
+    now = time.monotonic()
+    dt = now - state.get("_last_check", now)
+    state["_last_check"] = now
+
+    if track is None:
+        if state["status"] != "Stopped":
+            state.update(status="Stopped", pos_us=0, track=None, metadata={}, length_us=0)
+            emit_changed()
+        return True
+
+    meta, length_us = tags_for(track)
+    if length_us:
+        try:
+            size = track.stat().st_size
+            frac = min(1.0, byte_pos / size) if size else 0.0
+        except Exception:
+            frac = 0.0
+        pos_us = int(frac * length_us)
+    else:
+        pos_us = 0
+
+    new_status = state["status"]
+    if state["track"] != track:
+        new_status = "Playing"
+    else:
+        prev = state.get("_last_bytes")
+        # byte offset advancing => playing; stalled => paused
+        if prev is not None and byte_pos > prev + 0:
+            new_status = "Playing"
+        elif prev is not None and byte_pos == prev:
+            new_status = "Paused" if state["status"] != "Stopped" else "Playing"
+        else:
+            new_status = state["status"] if state["status"] != "Stopped" else "Playing"
+
+    changed = (
+        state["track"] != track
+        or state["status"] != new_status
+        or abs(state["pos_us"] - pos_us) > 2_000_000
+        or state["metadata"] != meta
+        or state["length_us"] != length_us
+    )
+    state.update(track=track, pos_us=pos_us, length_us=length_us,
+                 status=new_status, metadata=meta, _last_bytes=byte_pos)
+    if changed:
+        emit_changed()
+    return True
+
+
+last_emit = {"t": 0}
+
+
+def emit_changed():
+    conn = getattr(emit_changed, "conn", None)
+    if conn is None:
+        return
+    now = time.monotonic()
+    if now - last_emit["t"] < 0.4:
+        return
+    last_emit["t"] = now
+    changed = {
+        "PlaybackStatus": GLib.Variant("s", state["status"]),
+        "Metadata": GLib.Variant("a{sv}", state["metadata"]),
+        "Position": GLib.Variant("x", state["pos_us"]),
+    }
+    invalidated = []
+    for iname in (IFACE, PLAYER_IFACE):
+        conn.emit_signal(None, OBJ_PATH, PROPS_IFACE, "PropertiesChanged",
+                         GLib.Variant("(sa{sv}as)", (iname, changed, invalidated)))
+    return True
+
+
+# ---------------- DBus plumbing ----------------
+
+def variant_of(value):
+    # GLib.Variant -> python for Properties.Get replies we build ourselves
+    return value
+
+
+def handle_method_call(conn, sender, path, iface, method, params, invocation):
+    if method == "Introspect":
+        invocation.return_value(GLib.Variant("(s)", (INTROSPECT_XML,)))
+        return
+    if method == "Ping":
+        invocation.return_value(None)
+        return
+    if method == "GetMachineId":
+        try:
+            mid = Path("/etc/machine-id").read_text().strip()
+        except Exception:
+            mid = "0" * 32
+        invocation.return_value(GLib.Variant("(s)", (mid,)))
+        return
+    if iface == PROPS_IFACE:
+        try:
+            iname, prop = params.unpack()
+        except Exception:
+            invocation.return_error_literal(Gio.DBusError, "org.freedesktop.DBus.Error.InvalidArgs", "bad args")
+            return
+        if iname != IFACE:
+            invocation.return_error_literal(Gio.DBusError, "org.freedesktop.DBus.Error.UnknownInterface", iname)
+            return
+        val = prop_value(prop)
+        if val is None:
+            invocation.return_error_literal(Gio.DBusError, "org.freedesktop.DBus.Error.UnknownProperty", prop)
+            return
+        invocation.return_value(GLib.Variant("(v)", (val,)))
+        return
+    if iface == PLAYER_IFACE:
+        handle_player_method(method, params, invocation)
+        return
+    if iface == IFACE:
+        # Raise/Quit: focus the Onde window / leave as no-ops
+        invocation.return_value(None)
+        return
+    invocation.return_error_literal(Gio.DBusError, "org.freedesktop.DBus.Error.UnknownMethod", method)
+
+
+def send_onde_key(mods, key):
+    """Inject a keypress into the Onde window via Hyprland's send_key_state."""
+    for state in ("down", "up"):
+        try:
+            subprocess.run(
+                ["hyprctl", "eval",
+                 f'hl.dispatch(hl.dsp.send_key_state({{ mods = "{mods}", key = "{key}", state = "{state}", window = "class:onde" }}))'],
+                capture_output=True, timeout=3)
+        except Exception:
+            pass
+
+
+def handle_player_method(method, params, invocation):
+    # Onde has no remote API; drive it through its own keyboard shortcuts:
+    # Space = play/pause, Ctrl+Left/Right = previous/next track.
+    try:
+        if method == "PlayPause":
+            send_onde_key("", "space")
+        elif method == "Play":
+            if state["status"] == "Paused":
+                send_onde_key("", "space")
+        elif method == "Pause":
+            if state["status"] == "Playing":
+                send_onde_key("", "space")
+        elif method == "Next":
+            send_onde_key("CTRL", "Right")
+        elif method == "Previous":
+            send_onde_key("CTRL", "Left")
+        elif method == "Stop":
+            if state["status"] == "Playing":
+                send_onde_key("", "space")
+        # Seek/SetPosition/OpenUri unsupported
+    except Exception:
+        pass
+    invocation.return_value(None)
+
+
+def prop_value(name):
+    has_track = state["track"] is not None
+    controllable = has_track
+    props = {
+        "Identity": GLib.Variant("s", "Onde"),
+        "DesktopEntry": GLib.Variant("s", "onde"),
+        "Fullscreen": GLib.Variant("b", False),
+        "PlaybackStatus": GLib.Variant("s", state["status"]),
+        "LoopStatus": GLib.Variant("s", "None"),
+        "Rate": GLib.Variant("d", 1.0),
+        "Shuffle": GLib.Variant("b", False),
+        "Metadata": GLib.Variant("a{sv}", state["metadata"]),
+        "Volume": GLib.Variant("d", 1.0),
+        "Position": GLib.Variant("x", state["pos_us"]),
+        "MinimumRate": GLib.Variant("d", 1.0),
+        "MaximumRate": GLib.Variant("d", 1.0),
+        "CanGoNext": GLib.Variant("b", controllable),
+        "CanGoPrevious": GLib.Variant("b", controllable),
+        "CanPlay": GLib.Variant("b", controllable),
+        "CanPause": GLib.Variant("b", controllable),
+        "CanSeek": GLib.Variant("b", False),
+        "CanControl": GLib.Variant("b", controllable),
+        "CanQuit": GLib.Variant("b", False),
+        "CanRaise": GLib.Variant("b", False),
+    }
+    return props.get(name)
+
+
+def handle_get_property(conn, sender, path, iface, prop):
+    if iface in (IFACE, PLAYER_IFACE):
+        return prop_value(prop)
+    return None
+
+
+def handle_set_property(conn, sender, path, iface, prop, value, invocation):
+    # LoopStatus/Rate/Shuffle/Volume are accepted but inert (Onde has no API)
+    invocation.return_value(None)
+
+
+def main():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    result = bus.call_sync(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+        "RequestName", GLib.Variant("(su)", (BUS_NAME, 4)), None, Gio.DBusCallFlags.NONE, 5000, None)
+    code = result.unpack()[0]
+    if code != 1:
+        print(f"onde-mpris: could not own {BUS_NAME} (result {code})", file=sys.stderr)
+        sys.exit(1)
+
+    node = Gio.DBusNodeInfo.new_for_xml(INTROSPECT_XML)
+    conn = bus
+    for interface in node.interfaces:
+        if interface.name == PROPS_IFACE:
+            continue  # GDBus serves Properties.* from the registered properties
+        conn.register_object(
+            OBJ_PATH, interface,
+            handle_method_call,
+            handle_get_property,
+            handle_set_property)
+    emit_changed.conn = conn
+
+    GLib.timeout_add(1500, poll)
+    GLib.timeout_add(1000, emit_changed)
+    poll()
+    print(f"onde-mpris: exposing {BUS_NAME}", file=sys.stderr)
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()
