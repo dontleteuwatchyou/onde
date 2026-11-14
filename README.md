@@ -9,7 +9,6 @@ Un lecteur de musique en Rust et GPUI, sans Electron : ta bibliothèque, ton ser
 [![Dernière version](https://img.shields.io/github/v/release/dontleteuwatchyou/onde?label=version&color=2f55a8)](https://github.com/dontleteuwatchyou/onde/releases/latest)
 [![Licence MIT](https://img.shields.io/badge/licence-MIT-58a6ff)](LICENSE)
 ![Linux x86_64](https://img.shields.io/badge/Linux-x86__64-2f55a8?logo=linux&logoColor=white)
-![Windows x86_64](https://img.shields.io/badge/Windows-x86__64-2f55a8)
 ![Rust](https://img.shields.io/badge/Rust-GPUI-dea584?logo=rust&logoColor=white)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-soutenir-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/forsakengh)
 
@@ -25,13 +24,7 @@ Sous Linux :
 curl -fsSL https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.sh | sh
 ```
 
-Sous Windows, dans PowerShell :
-
-```powershell
-irm https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.ps1 | iex
-```
-
-Le script télécharge la dernière version, vérifie sa somme de contrôle et installe Onde pour ton utilisateur, sans droits d'administrateur. Onde apparaît aussi dans ton lanceur d'applications ou ton menu Démarrer.
+Le script télécharge la dernière version, vérifie sa somme de contrôle et installe Onde pour ton utilisateur, sans droits d'administrateur. Onde apparaît aussi dans ton lanceur d'applications.
 
 Sous Linux, tu peux aussi lancer la commande `onde`. Si elle est introuvable, ajoute `~/.local/bin` à ton `PATH`.
 
@@ -43,11 +36,7 @@ Pour désinstaller Onde sous Linux (ta musique et tes réglages restent en place
 curl -fsSL https://raw.githubusercontent.com/dontleteuwatchyou/onde/master/install.sh | sh -s -- --uninstall
 ```
 
-Sous Windows, télécharge `install.ps1` puis lance `powershell -File install.ps1 -Uninstall`.
-
 ### Ce qu'il faut sur ton système
-
-**Windows :** Windows 10 ou 11, x86_64. Pour YouTube et SoundCloud, ajoute `yt-dlp` et `ffmpeg`, par exemple avec `winget install yt-dlp.yt-dlp Gyan.FFmpeg`. L'analyse de qualité des FLAC demande `flac`.
 
 **Linux :** la version compilée vise Linux x86_64 et a été construite sous Arch Linux. Avec une glibc plus ancienne, compile depuis les sources.
 
@@ -172,6 +161,13 @@ chmod 600 ~/.config/onde/telegram/api.env
 
 Ensuite, Entrée affiche les résultats et un clic sur une musique la télécharge dans ton dossier de musique, dès que le bot l'a préparée. Le choix d'un résultat poste un message dans ton chat avec le bot. Onde se reconnecte tout seul à chaque lancement. **Supprimer la session** dans le panneau revient en arrière ; révoque-la aussi dans Telegram. Le détail est dans [`design/telegram-source-review.md`](design/telegram-source-review.md).
 
+### MPRIS
+
+Réservé à Linux : Onde n'expose pas MPRIS lui-même, mais le pont de
+[`integrations/mpris`](integrations/mpris/README.md) publie
+`org.mpris.MediaPlayer2.onde` pour que ton shell et tes touches multimédias
+puissent le contrôler comme n'importe quel lecteur.
+
 ## Ta vie privée
 
 Onde n'a ni compte, ni pisteur, ni télémétrie. Seules ces fonctions contactent des services :
@@ -196,8 +192,6 @@ Les images hébergées sont visibles par toute personne qui a leur lien.
 |---|---|
 | Linux, Wayland (Hyprland) | ✅ Utilisé au quotidien |
 | Linux, X11 | ❓ Pas testé |
-| Windows 10 et 11 | 🧪 Compilé et testé par la CI, à confirmer à l'usage. Sans Telegram |
-| macOS | ❌ Pas pris en charge |
 
 ## Soutenir
 
