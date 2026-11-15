@@ -1,7 +1,7 @@
 #!/bin/sh
 # Prépare une version d'Onde depuis un clone propre et la signe.
-#   scripts/release.sh 0.2.0             construit et signe, sans rien publier
-#   scripts/release.sh 0.2.0 --publish   crée aussi la release GitHub
+#   scripts/release.sh 0.3.0             construit et signe, sans rien publier
+#   scripts/release.sh 0.3.0 --publish   crée aussi la release GitHub
 # Il faut rsign (cargo install rsign2) et la clé privée, jamais dans le dépôt :
 # ONDE_SIGNING_KEY, par défaut ~/.config/onde-release/onde.key
 set -eu

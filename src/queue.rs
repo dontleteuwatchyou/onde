@@ -19,6 +19,8 @@ pub struct Queue {
     pub context: Vec<usize>,
     /// The list chosen, in its own order. Empty: the whole list.
     order: Vec<usize>,
+    /// Tracks explicitly added after the current playing context.
+    queued: Vec<usize>,
     pub shuffle: bool,
 }
 
@@ -45,6 +47,7 @@ impl Queue {
         self.current = None;
         self.context.clear();
         self.order.clear();
+        self.queued.clear();
     }
 
     /// New contents of the same library: what is playing stays current.
@@ -56,14 +59,19 @@ impl Queue {
                 .map(|track| track.location.clone())
                 .collect()
         };
-        let (context, order) = (places(&self.context), places(&self.order));
+        let (context, order, queued) = (
+            places(&self.context),
+            places(&self.order),
+            places(&self.queued),
+        );
         self.tracks = tracks;
         let indexes = |list: &[crate::library::Location]| -> Vec<usize> {
             list.iter()
                 .filter_map(|location| self.tracks.iter().position(|t| t.location == *location))
                 .collect()
         };
-        (self.context, self.order) = (indexes(&context), indexes(&order));
+        (self.context, self.order, self.queued) =
+            (indexes(&context), indexes(&order), indexes(&queued));
         self.current =
             playing.and_then(|location| self.tracks.iter().position(|t| t.location == location));
     }
@@ -74,8 +82,24 @@ impl Queue {
 
     /// Starts following a list, or the whole library when it is empty.
     pub fn follow(&mut self, first: usize, order: Vec<usize>, seed: u64) {
+        self.queued.clear();
         self.order = order;
         self.arrange(Some(first), seed);
+    }
+
+    /// Adds tracks after the current context, preserving their given order.
+    pub fn enqueue(&mut self, tracks: impl IntoIterator<Item = usize>) {
+        self.queued
+            .extend(tracks.into_iter().filter(|&index| index < self.tracks.len()));
+    }
+
+    /// Selecting a queued track makes it the start of the remaining context.
+    pub fn start_queued(&mut self, index: usize) {
+        if let Some(position) = self.queued.iter().position(|&queued| queued == index) {
+            self.context = self.queued.drain(position..).collect();
+            self.order = self.context.clone();
+            self.queued.clear();
+        }
     }
 
     /// The current track stays, and what follows changes.
@@ -118,23 +142,37 @@ impl Queue {
 
     pub fn next_index(&self) -> Option<usize> {
         if let Some(place) = self.place_in_context() {
-            return self.context.get(place + 1).copied();
+            if let Some(next) = self.context.get(place + 1) {
+                return Some(*next);
+            }
+        } else {
+            let next = self.current.map_or(0, |current| current + 1);
+            if next < self.tracks.len() {
+                return Some(next);
+            }
         }
-        let next = self.current.map_or(0, |current| current + 1);
-        (next < self.tracks.len()).then_some(next)
+        self.queued.first().copied()
     }
 
     pub fn upcoming_count(&self) -> usize {
-        match self.place_in_context() {
+        let context_count = match self.place_in_context() {
             Some(place) => self.context.len() - place - 1,
             None => {
                 let next = self.current.map_or(0, |current| current + 1);
                 self.tracks.len().saturating_sub(next)
             }
-        }
+        };
+        context_count + self.queued.len()
     }
 
     pub fn upcoming_at(&self, row: usize) -> Option<usize> {
+        let context_count = match self.place_in_context() {
+            Some(place) => self.context.len() - place - 1,
+            None => self.tracks.len().saturating_sub(self.current.map_or(0, |i| i + 1)),
+        };
+        if row >= context_count {
+            return self.queued.get(row - context_count).copied();
+        }
         match self.place_in_context() {
             Some(place) => self.context.get(place + 1 + row).copied(),
             None => {
