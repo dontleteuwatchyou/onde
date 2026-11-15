@@ -287,6 +287,8 @@ impl Onde {
         let deleting = self.deleting;
         let first = tracks.first().copied();
         let order = tracks.clone();
+        let shuffle_order = tracks.clone();
+        let queue_order = tracks.clone();
         let header = div()
             .w_full()
             .flex_none()
@@ -324,6 +326,16 @@ impl Onde {
                                 row.child(primary("collection-play", "Écouter").on_click(
                                     cx.listener(move |this, _, _, cx| {
                                         this.start_in(first, order.to_vec(), cx);
+                                    }),
+                                ))
+                                .child(ghost("collection-shuffle", "Aléatoire").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.start_shuffled_in(first, shuffle_order.to_vec(), cx);
+                                    }),
+                                ))
+                                .child(ghost("collection-enqueue", "Ajouter à la file").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.enqueue_tracks(queue_order.to_vec(), cx);
                                     }),
                                 ))
                             })

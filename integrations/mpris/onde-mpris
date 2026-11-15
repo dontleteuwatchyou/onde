@@ -61,6 +61,10 @@ INTROSPECT_XML = """<?xml version="1.0"?>
 <property name="CanControl" type="b" access="read"/>
 <property name="CanQuit" type="b" access="read"/>
 <property name="CanRaise" type="b" access="read"/>
+<property name="HasTrackList" type="b" access="read"/>
+<property name="CanSetFullscreen" type="b" access="read"/>
+<property name="SupportedUriSchemes" type="as" access="read"/>
+<property name="SupportedMimeTypes" type="as" access="read"/>
 </interface>
 <interface name="org.mpris.MediaPlayer2.Player">
 <method name="Next"/>
@@ -174,6 +178,10 @@ def tags_for(path):
     try:
         mf = MutagenFile(str(path))
         if mf is not None:
+            try:
+                easy = MutagenFile(str(path), easy=True)
+            except Exception:
+                easy = None
             mf_info = getattr(mf, "info", None)
             if mf_info is not None and getattr(mf_info, "length", None):
                 length_us = int(mf_info.length * 1_000_000)
@@ -181,10 +189,10 @@ def tags_for(path):
                 if isinstance(v, (list, tuple)):
                     v = v[0] if v else ""
                 return str(v).strip() if v else ""
-            title = first(getattr(mf, "title", "")) or path.stem
-            artist = first(getattr(mf, "artist", ""))
-            album = first(getattr(mf, "album", ""))
-            tracknum = getattr(mf, "tracknumber", None) or getattr(mf, "track", None)
+            title = first(easy.get("title", "") if easy is not None else "") or path.stem
+            artist = first(easy.get("artist", "") if easy is not None else "")
+            album = first(easy.get("album", "") if easy is not None else "")
+            tracknum = easy.get("tracknumber", "") if easy is not None else ""
             tracknum = first(tracknum) if tracknum else ""
             m = {"xesam:title": GLib.Variant("s", title)}
             if artist:
@@ -196,7 +204,9 @@ def tags_for(path):
             m["mpris:trackid"] = GLib.Variant("o", f"/org/mpris/MediaPlayer2/onde/Track/{track_id}")
             m["mpris:artUrl"] = GLib.Variant("s", art_url_for(path, mf))
             if tracknum:
-                m["xesam:trackNumber"] = GLib.Variant("i", int(re.sub(r"\D", "", tracknum) or 0))
+                match = re.search(r"\d+", tracknum)
+                if match:
+                    m["xesam:trackNumber"] = GLib.Variant("i", int(match.group()))
             meta = m
     except Exception:
         pass
@@ -213,21 +223,43 @@ def art_url_for(path, mf):
         return art_cache[key]
     url = ""
     try:
-        pictures = getattr(mf, "pictures", None)
-        if pictures:
-            pic = pictures[0]
-            ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(getattr(pic, "mime", ""), ".jpg")
+        # Mutagen exposes covers differently for FLAC, ID3/MP3 and MP4/M4A.
+        # Onde's YouTube downloads are commonly MP3/M4A, so checking only
+        # ``mf.pictures`` silently loses their embedded thumbnail.
+        pictures = list(getattr(mf, "pictures", None) or [])
+        tags = getattr(mf, "tags", None)
+        if tags:
+            getall = getattr(tags, "getall", None)
+            if getall:
+                pictures.extend(getall("APIC"))
+            pictures.extend(tags.get("covr", []) or [])
+        for pic in pictures:
+            # MP4Cover is itself a bytes subclass, unlike ID3 APIC and FLAC
+            # Picture where the bytes live in a ``data`` attribute.
+            data = getattr(pic, "data", pic if isinstance(pic, (bytes, bytearray)) else None)
+            if callable(data):
+                data = data()
+            if not data:
+                continue
+            mime = getattr(pic, "mime", "")
+            if not mime and bytes(data).startswith(b"\x89PNG\r\n\x1a\n"):
+                mime = "image/png"
+            ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(mime, ".jpg")
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             art = CACHE_DIR / f"{hashlib.md5(key.encode()).hexdigest()[:12]}{ext}"
             if not art.exists():
-                art.write_bytes(pic.data)
+                art.write_bytes(bytes(data))
             url = art.as_uri()
+            break
     except Exception:
         pass
     if not url:
         # common sidecar names next to the file
-        for name in ("cover.jpg", "folder.jpg", "front.jpg", "cover.png"):
-            cand = path.parent / name
+        # yt-dlp may leave the thumbnail beside the audio if embedding failed
+        # (for example when the audio container does not support cover tags).
+        beside = [path.with_suffix(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")]
+        shared = [path.parent / name for name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png")]
+        for cand in beside + shared:
             if cand.is_file():
                 url = cand.as_uri()
                 break
@@ -301,11 +333,15 @@ def emit_changed():
         "PlaybackStatus": GLib.Variant("s", state["status"]),
         "Metadata": GLib.Variant("a{sv}", state["metadata"]),
         "Position": GLib.Variant("x", state["pos_us"]),
+        "CanControl": GLib.Variant("b", state["track"] is not None),
+        "CanPlay": GLib.Variant("b", state["track"] is not None),
+        "CanPause": GLib.Variant("b", state["track"] is not None),
+        "CanGoNext": GLib.Variant("b", state["track"] is not None),
+        "CanGoPrevious": GLib.Variant("b", state["track"] is not None),
     }
     invalidated = []
-    for iname in (IFACE, PLAYER_IFACE):
-        conn.emit_signal(None, OBJ_PATH, PROPS_IFACE, "PropertiesChanged",
-                         GLib.Variant("(sa{sv}as)", (iname, changed, invalidated)))
+    conn.emit_signal(None, OBJ_PATH, PROPS_IFACE, "PropertiesChanged",
+                     GLib.Variant("(sa{sv}as)", (PLAYER_IFACE, changed, invalidated)))
     return True
 
 
@@ -416,6 +452,10 @@ def prop_value(name):
         "CanControl": GLib.Variant("b", controllable),
         "CanQuit": GLib.Variant("b", False),
         "CanRaise": GLib.Variant("b", False),
+        "HasTrackList": GLib.Variant("b", False),
+        "CanSetFullscreen": GLib.Variant("b", False),
+        "SupportedUriSchemes": GLib.Variant("as", []),
+        "SupportedMimeTypes": GLib.Variant("as", []),
     }
     return props.get(name)
 
@@ -426,21 +466,15 @@ def handle_get_property(conn, sender, path, iface, prop):
     return None
 
 
-def handle_set_property(conn, sender, path, iface, prop, value, invocation):
+def handle_set_property(conn, sender, path, iface, prop, value):
     # LoopStatus/Rate/Shuffle/Volume are accepted but inert (Onde has no API)
-    invocation.return_value(None)
+    return True
 
 
 def main():
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-    result = bus.call_sync(
-        "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
-        "RequestName", GLib.Variant("(su)", (BUS_NAME, 4)), None, Gio.DBusCallFlags.NONE, 5000, None)
-    code = result.unpack()[0]
-    if code != 1:
-        print(f"onde-mpris: could not own {BUS_NAME} (result {code})", file=sys.stderr)
-        sys.exit(1)
-
+    # Export the objects before announcing the well-known name: clients such
+    # as Quickshell immediately inspect a new player as soon as the name appears.
     node = Gio.DBusNodeInfo.new_for_xml(INTROSPECT_XML)
     conn = bus
     for interface in node.interfaces:
@@ -451,6 +485,14 @@ def main():
             handle_method_call,
             handle_get_property,
             handle_set_property)
+    result = bus.call_sync(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+        "RequestName", GLib.Variant("(su)", (BUS_NAME, 4)), None, Gio.DBusCallFlags.NONE, 5000, None)
+    code = result.unpack()[0]
+    if code != 1:
+        print(f"onde-mpris: could not own {BUS_NAME} (result {code})", file=sys.stderr)
+        sys.exit(1)
+
     emit_changed.conn = conn
 
     GLib.timeout_add(1500, poll)

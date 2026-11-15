@@ -351,6 +351,23 @@ impl Onde {
         self.play(index, cx);
     }
 
+    /// Starts a collection with its chosen first track and shuffles the rest.
+    fn start_shuffled_in(&mut self, index: usize, order: Vec<usize>, cx: &mut Context<Self>) {
+        self.queue.shuffle = true;
+        self.save_settings(|settings| settings.shuffle = true);
+        self.queue.follow(index, order, random_seed());
+        self.play(index, cx);
+    }
+
+    fn enqueue_tracks(&mut self, tracks: Vec<usize>, cx: &mut Context<Self>) {
+        if tracks.is_empty() {
+            return;
+        }
+        self.queue.enqueue(tracks);
+        self.show_queue = true;
+        cx.notify();
+    }
+
     fn tick(&mut self, cx: &mut Context<Self>) -> Duration {
         self.poll_telegram(cx);
         if self.screen == Screen::Downloads && self.downloads.needs_updates() {
@@ -556,6 +573,7 @@ impl Onde {
                 return;
             }
         }
+        self.queue.start_queued(index);
         self.queue.current = Some(index);
         self.position = 0.0;
         self.message = None;

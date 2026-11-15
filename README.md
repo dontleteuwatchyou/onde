@@ -76,9 +76,9 @@ git clone https://github.com/dontleteuwatchyou/onde && cd onde && cargo build --
 
 | | |
 |---|---|
-| 🎵 **Lecture** | Fichiers locaux, format réel affiché (FLAC 24 bits, 96 kHz…), lecture aléatoire |
+| 🎵 **Lecture** | Fichiers locaux, format réel affiché (FLAC 24 bits, 96 kHz…), lecture aléatoire et file d'attente |
 | 📚 **Bibliothèque** | Morceaux, albums, artistes, tri et recherche |
-| ❤️ **Collections** | Titres likés et playlists, qui survivent à un nouveau scan |
+| ❤️ **Collections** | Titres likés et playlists, lecture aléatoire d'une playlist et ajout à la file, conservés après un nouveau scan |
 | 🖧 **Navidrome** | Ton serveur Subsonic ou Navidrome comme source |
 | ⬇️ **Téléchargements** | YouTube et SoundCloud avec `yt-dlp`, Live Music Archive, et Telegram en option |
 | 🎤 **Paroles** | Paroles synchronisées quand elles existent |

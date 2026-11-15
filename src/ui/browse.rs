@@ -441,6 +441,14 @@ impl Onde {
                 })),
             )
             .child(
+                icon_small(("queue-add", index), "queue").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.enqueue_tracks(vec![index], cx);
+                    },
+                )),
+            )
+            .child(
                 icon_small(("add", index), "listplus").on_click(cx.listener(
                     move |this, _, _, cx| {
                         cx.stop_propagation();

@@ -401,15 +401,15 @@ impl Onde {
                     count,
                     cx.processor(|this, range: Range<usize>, _, cx| {
                         let palette = pal();
-                        let rows: Vec<usize> = range
-                            .filter_map(|row| this.queue.upcoming_at(row))
+                        let rows: Vec<(usize, usize)> = range
+                            .filter_map(|row| this.queue.upcoming_at(row).map(|index| (row, index)))
                             .collect();
                         rows.into_iter()
-                            .map(|index| {
+                            .map(|(row, index)| {
                                 let track = this.queue.tracks[index].clone();
                                 let art = this.art(&album_key(&track), cx);
                                 div()
-                                    .id(("queue-row", index))
+                                    .id(("queue-row", row))
                                     .w_full()
                                     .h(px(52.))
                                     .flex()
