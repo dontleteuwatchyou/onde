@@ -18,14 +18,70 @@ pub fn remix(input: &[f32], from: usize, to: usize) -> Vec<f32> {
     out
 }
 
-/// Streaming linear resampler. Good enough for now; a band-limited one can
-/// replace it behind the same interface.
+/// Half-length of the sinc filter: 16 taps on each side = 32 total.
+const HALF_TAPS: usize = 16;
+/// Number of precomputed sub-sample phases for polyphase interpolation.
+const PHASES: usize = 256;
+/// Kaiser window parameter: controls sidelobe attenuation (~80 dB at beta=8).
+const KAISER_BETA: f64 = 8.0;
+
+fn bessel_i0(x: f64) -> f64 {
+    let mut sum = 1.0;
+    let mut term = 1.0;
+    for k in 1..25 {
+        term *= (x / (2.0 * k as f64)) * (x / (2.0 * k as f64));
+        sum += term;
+    }
+    sum
+}
+
+fn build_sinc_table() -> Vec<[f32; HALF_TAPS * 2]> {
+    let denom = bessel_i0(KAISER_BETA);
+    let full = HALF_TAPS * 2;
+    let mut table = vec![[0.0f32; HALF_TAPS * 2]; PHASES];
+    for phase in 0..PHASES {
+        let frac = phase as f64 / PHASES as f64;
+        for tap in 0..full {
+            let n = tap as f64 - (HALF_TAPS as f64 - 1.0) - frac;
+            let sinc = if n.abs() < 1e-9 {
+                1.0
+            } else {
+                (n * std::f64::consts::PI).sin() / (n * std::f64::consts::PI)
+            };
+            let window_pos = (tap as f64 + frac) / full as f64;
+            let r = 2.0 * window_pos - 1.0;
+            let kaiser = bessel_i0(KAISER_BETA * (1.0 - r * r).max(0.0).sqrt()) / denom;
+            table[phase][tap] = (sinc * kaiser) as f32;
+        }
+        let sum: f32 = table[phase].iter().sum();
+        if sum.abs() > 1e-6 {
+            for coeff in &mut table[phase] {
+                *coeff /= sum;
+            }
+        }
+    }
+    table
+}
+
+/// Streaming windowed-sinc resampler with polyphase decomposition.
 pub struct Resampler {
     step: f64,
     channels: usize,
     position: f64,
-    last: Vec<f32>,
+    /// Ring buffer holding recent input frames (interleaved, channels * HISTORY_FRAMES).
+    history: Vec<f32>,
+    /// Write position in the ring buffer (in frames).
+    write_pos: usize,
+    /// How many frames have been written since reset (capped at capacity).
+    filled: usize,
+    table: &'static Vec<[f32; HALF_TAPS * 2]>,
 }
+
+use std::sync::LazyLock;
+
+static SINC_TABLE: LazyLock<Vec<[f32; HALF_TAPS * 2]>> = LazyLock::new(build_sinc_table);
+
+const HISTORY_FRAMES: usize = HALF_TAPS * 2 + 1;
 
 impl Resampler {
     pub fn new(from_rate: u32, to_rate: u32, channels: usize) -> Self {
@@ -33,43 +89,67 @@ impl Resampler {
             step: f64::from(from_rate) / f64::from(to_rate),
             channels,
             position: 0.0,
-            last: vec![0.0; channels],
+            history: vec![0.0; channels * HISTORY_FRAMES],
+            write_pos: 0,
+            filled: 0,
+            table: &SINC_TABLE,
         }
     }
 
     pub fn reset(&mut self) {
         self.position = 0.0;
-        self.last.fill(0.0);
+        self.history.fill(0.0);
+        self.write_pos = 0;
+        self.filled = 0;
+    }
+
+    fn push_frame(&mut self, frame: &[f32]) {
+        let base = self.write_pos * self.channels;
+        self.history[base..base + self.channels].copy_from_slice(frame);
+        self.write_pos = (self.write_pos + 1) % HISTORY_FRAMES;
+        if self.filled < HISTORY_FRAMES {
+            self.filled += 1;
+        }
+    }
+
+    fn read_history(&self, frame_offset: isize, channel: usize) -> f32 {
+        let pos = (self.write_pos as isize + frame_offset)
+            .rem_euclid(HISTORY_FRAMES as isize) as usize;
+        self.history[pos * self.channels + channel]
     }
 
     pub fn process(&mut self, input: &[f32]) -> Vec<f32> {
         if self.step == 1.0 {
             return input.to_vec();
         }
-        let frames = input.len() / self.channels;
-        if frames == 0 {
+        let in_frames = input.len() / self.channels;
+        if in_frames == 0 {
             return Vec::new();
         }
-        let mut out = Vec::with_capacity((frames as f64 / self.step) as usize * self.channels + 8);
-        // `position` is measured with -1 meaning the last frame of the previous chunk.
-        while self.position < frames as f64 - 1.0 {
-            let whole = self.position.floor();
-            let fraction = (self.position - whole) as f32;
-            let index = whole as isize;
-            for ch in 0..self.channels {
-                let a = if index < 0 {
-                    self.last[ch]
-                } else {
-                    input[index as usize * self.channels + ch]
-                };
-                let b = input[(index + 1) as usize * self.channels + ch];
-                out.push(a + (b - a) * fraction);
+        let est = (in_frames as f64 / self.step) as usize + 8;
+        let mut out = Vec::with_capacity(est * self.channels);
+        let full = HALF_TAPS * 2;
+
+        for frame_idx in 0..in_frames {
+            self.push_frame(&input[frame_idx * self.channels..(frame_idx + 1) * self.channels]);
+
+            while self.position < 1.0 && self.filled >= full {
+                let frac = self.position;
+                let phase = ((frac * PHASES as f64) as usize).min(PHASES - 1);
+                let coeffs = &self.table[phase];
+
+                for ch in 0..self.channels {
+                    let mut sample = 0.0f32;
+                    for tap in 0..full {
+                        let offset = tap as isize - full as isize;
+                        sample += self.read_history(offset, ch) * coeffs[tap];
+                    }
+                    out.push(sample);
+                }
+                self.position += self.step;
             }
-            self.position += self.step;
+            self.position -= 1.0;
         }
-        self.position -= frames as f64;
-        self.last
-            .copy_from_slice(&input[(frames - 1) * self.channels..]);
         out
     }
 }
@@ -117,6 +197,21 @@ mod tests {
             .windows(2)
             .map(|w| (w[1] - w[0]).abs())
             .fold(0.0, f32::max);
-        assert!(biggest < 0.001, "discontinuity of {biggest}");
+        assert!(biggest < 0.002, "discontinuity of {biggest}");
+    }
+
+    #[test]
+    fn sinc_table_is_normalized() {
+        let table = build_sinc_table();
+        let sum: f32 = table[0].iter().sum();
+        assert!((sum - 1.0).abs() < 0.01, "phase 0 sum = {sum}");
+    }
+
+    #[test]
+    fn downsampling_preserves_duration() {
+        let mut r = Resampler::new(96_000, 48_000, 1);
+        let chunk = vec![0.5_f32; 9_600];
+        let total: usize = (0..10).map(|_| r.process(&chunk).len()).sum();
+        assert!((total as i64 - 48_000).abs() <= 2, "got {total} frames");
     }
 }

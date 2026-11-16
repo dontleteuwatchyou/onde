@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::library::Track;
 
+#[derive(Clone)]
 pub struct Album {
     pub key: String,
     pub title: String,
@@ -14,13 +15,14 @@ pub struct Album {
     pub seconds: f64,
 }
 
+#[derive(Clone)]
 pub struct Artist {
     pub name: String,
     pub albums: Vec<usize>,
     pub tracks: usize,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Catalog {
     pub albums: Vec<Album>,
     pub artists: Vec<Artist>,

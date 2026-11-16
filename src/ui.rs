@@ -34,6 +34,7 @@ use crate::library::{Location, format_time};
 use crate::lyrics::source::{self, Origin};
 use crate::lyrics::{Line, Lyrics, active_line, line_fills};
 use crate::queue::{Previous, Queue};
+use crate::server::{SharedLibrary, SubsonicServer};
 use crate::sources::MusicSource;
 use crate::sources::local::LocalFolder;
 use crate::sources::subsonic::Subsonic;
@@ -224,6 +225,8 @@ pub struct Onde {
     covers_wanted: Vec<String>,
     covers_running: usize,
     focus: FocusHandle,
+    shared_library: Arc<std::sync::RwLock<SharedLibrary>>,
+    subsonic_server: Option<SubsonicServer>,
 }
 
 impl Onde {
@@ -311,6 +314,8 @@ impl Onde {
             covers_wanted: Vec::new(),
             covers_running: 0,
             focus,
+            shared_library: Arc::new(std::sync::RwLock::new(SharedLibrary::default())),
+            subsonic_server: None,
         };
         match startup {
             Startup::Empty => match settings.music_folder {
@@ -325,6 +330,9 @@ impl Onde {
         this.restart_presence();
         this.queue.shuffle = config::load().shuffle;
         this.start_update_checks(cx);
+        if settings.server_enabled {
+            this.start_server(cx);
+        }
         this
     }
 
@@ -370,6 +378,7 @@ impl Onde {
 
     fn tick(&mut self, cx: &mut Context<Self>) -> Duration {
         self.poll_telegram(cx);
+        self.poll_live_search(cx);
         if self.screen == Screen::Downloads && self.downloads.needs_updates() {
             cx.notify();
         }

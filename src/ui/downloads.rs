@@ -3,6 +3,7 @@
 use crate::telegram::Telegram;
 use serde_json::json;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use gpui::{ElementId, FontWeight, KeyDownEvent, rgb};
 
@@ -41,6 +42,8 @@ pub(super) struct Downloads {
     error: Option<SharedString>,
     jobs: Vec<Job>,
     pub(super) folder: PathBuf,
+    /// Set on each keystroke; cleared once the debounced search fires.
+    pub(super) last_typed: Option<Instant>,
 }
 
 impl Downloads {
@@ -64,13 +67,19 @@ impl Downloads {
                 Err(error) => startup_error = Some(format!("{error:#}").into()),
             }
         }
+        let sources = download::sources();
+        let saved_source = config::load().download_source;
+        let selected = saved_source
+            .as_deref()
+            .and_then(|name| sources.iter().position(|s| s.name() == name))
+            .unwrap_or(0);
         Self {
             telegram,
             telegram_consent: session,
             telegram_delete: false,
             telegram_received: 0,
-            sources: download::sources(),
-            selected: 0,
+            sources,
+            selected,
             telegram_selected: false,
             query: String::new(),
             searching: false,
@@ -80,6 +89,7 @@ impl Downloads {
             error: startup_error,
             jobs: Vec::new(),
             folder,
+            last_typed: None,
         }
     }
 
@@ -310,8 +320,20 @@ impl Onde {
     fn search_text_changed(&mut self, cx: &mut Context<Self>) {
         if self.naming.is_none() && self.screen != Screen::Downloads {
             self.refilter();
+        } else if self.screen == Screen::Downloads && self.naming.is_none() {
+            self.downloads.last_typed = Some(Instant::now());
         }
         cx.notify();
+    }
+
+    pub(super) fn poll_live_search(&mut self, cx: &mut Context<Self>) {
+        const DEBOUNCE: Duration = Duration::from_millis(400);
+        if let Some(typed) = self.downloads.last_typed {
+            if typed.elapsed() >= DEBOUNCE {
+                self.downloads.last_typed = None;
+                self.search(cx);
+            }
+        }
     }
 
     pub(super) fn type_in_search(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -374,6 +396,8 @@ impl Onde {
         self.downloads.hits.clear();
         self.downloads.searched = false;
         self.downloads.error = None;
+        let name = self.downloads.sources[index].name().to_owned();
+        self.save_settings(|settings| settings.download_source = Some(name));
         self.search(cx);
         cx.notify();
     }

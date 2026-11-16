@@ -15,6 +15,7 @@ mod lyrics;
 mod online_cover;
 mod quality;
 mod queue;
+mod server;
 mod sources;
 mod telegram;
 mod theme;
