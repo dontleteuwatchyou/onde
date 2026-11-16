@@ -30,6 +30,13 @@ pub struct Config {
     pub shuffle: bool,
     /// Never asks GitHub for a new version on its own.
     pub no_update_check: bool,
+    /// Remembered download source name (YouTube, SoundCloud, etc.).
+    pub download_source: Option<String>,
+    /// Subsonic server for mobile access.
+    pub server_enabled: bool,
+    pub server_port: Option<u16>,
+    pub server_user: Option<String>,
+    pub server_password: Option<String>,
 }
 
 fn path() -> Result<PathBuf> {

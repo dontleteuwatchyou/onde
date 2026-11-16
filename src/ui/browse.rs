@@ -45,6 +45,7 @@ impl Onde {
             .collect();
         self.refilter();
         self.restart_hosting();
+        self.update_shared_library();
     }
 
     pub(super) fn content_width(&self, window: &Window) -> f32 {
