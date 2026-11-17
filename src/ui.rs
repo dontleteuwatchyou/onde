@@ -388,7 +388,9 @@ impl Onde {
             cx.notify();
         }
         if self.screen == Screen::Search
-            && (self.downloads.telegram.is_some() || self.search.last_typed.is_some())
+            && (self.downloads.telegram.is_some()
+                || self.search.last_typed.is_some()
+                || self.search.needs_updates())
         {
             cx.notify();
         }

@@ -29,6 +29,19 @@ pub(super) struct MusicInfo {
     pub cover_url: Option<String>,
 }
 
+pub(super) enum DownloadState {
+    SentToTelegram,
+    Searching,
+    Downloading(Transfer),
+    Done,
+    Failed(SharedString),
+}
+
+pub(super) struct SearchDownload {
+    pub info: MusicInfo,
+    pub state: DownloadState,
+}
+
 pub(super) struct SearchScreen {
     pub(super) query: String,
     pub(super) results: Vec<MusicInfo>,
@@ -39,6 +52,7 @@ pub(super) struct SearchScreen {
     pub(super) last_typed: Option<Instant>,
     covers: HashMap<String, Option<Arc<RenderImage>>>,
     covers_loading: usize,
+    pub(super) active_downloads: Vec<SearchDownload>,
 }
 
 impl SearchScreen {
@@ -53,7 +67,19 @@ impl SearchScreen {
             last_typed: None,
             covers: HashMap::new(),
             covers_loading: 0,
+            active_downloads: Vec::new(),
         }
+    }
+
+    pub(super) fn needs_updates(&self) -> bool {
+        self.active_downloads.iter().any(|dl| {
+            matches!(
+                dl.state,
+                DownloadState::SentToTelegram
+                    | DownloadState::Searching
+                    | DownloadState::Downloading(_)
+            )
+        })
     }
 }
 
@@ -98,7 +124,11 @@ fn fetch_cover_image(url: &str) -> Option<Arc<RenderImage>> {
             .build(),
     );
     let mut response = agent.get(url).call().ok()?;
-    let mut body = response.body_mut().with_config().limit(2_000_000).reader();
+    let mut body = response
+        .body_mut()
+        .with_config()
+        .limit(2_000_000)
+        .reader();
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut body, &mut bytes).ok()?;
     let decoded = image::load_from_memory(&bytes).ok()?;
@@ -193,7 +223,17 @@ impl Onde {
             format!("{} - {}", info.artist, info.title)
         };
 
-        // Send to Telegram by default
+        // Check if already downloading this track
+        let already = self.search.active_downloads.iter().any(|dl| {
+            dl.info.title == info.title
+                && dl.info.artist == info.artist
+                && !matches!(dl.state, DownloadState::Done | DownloadState::Failed(_))
+        });
+        if already {
+            return;
+        }
+
+        // Try Telegram first
         if self.downloads.telegram_consent {
             let alive = self
                 .downloads
@@ -207,15 +247,20 @@ impl Onde {
                 }) {
                     Ok(bridge) => self.downloads.telegram = Some(bridge),
                     Err(error) => {
-                        self.search.error = Some(format!("{error:#}").into());
+                        self.search.active_downloads.push(SearchDownload {
+                            info,
+                            state: DownloadState::Failed(format!("{error:#}").into()),
+                        });
                         cx.notify();
                         return;
                     }
                 }
-                self.search.error = Some(
-                    "Service Telegram relancé : relancer le téléchargement une fois connecté."
-                        .into(),
-                );
+                self.search.active_downloads.push(SearchDownload {
+                    info,
+                    state: DownloadState::Failed(
+                        "Telegram relancé, réessayer dans quelques secondes.".into(),
+                    ),
+                });
                 cx.notify();
                 return;
             }
@@ -225,14 +270,21 @@ impl Onde {
                 .as_ref()
                 .is_some_and(|bridge| bridge.state.lock().unwrap().connected);
             if !connected {
-                self.search.error =
-                    Some("Connecter Telegram dans Téléchargements d'abord.".into());
+                self.search.active_downloads.push(SearchDownload {
+                    info,
+                    state: DownloadState::Failed(
+                        "Telegram non connecté. Aller dans Téléchargements pour connecter.".into(),
+                    ),
+                });
                 cx.notify();
                 return;
             }
             let folder = config::load().music_folder;
             let Some(folder) = folder else {
-                self.search.error = Some("Choisir le dossier musical d'abord.".into());
+                self.search.active_downloads.push(SearchDownload {
+                    info,
+                    state: DownloadState::Failed("Choisir le dossier musical d'abord.".into()),
+                });
                 cx.notify();
                 return;
             };
@@ -243,42 +295,84 @@ impl Onde {
                 "folder": folder,
             })) {
                 Ok(()) => {
-                    self.search.error = None;
+                    self.search.active_downloads.push(SearchDownload {
+                        info,
+                        state: DownloadState::SentToTelegram,
+                    });
                 }
                 Err(error) => {
-                    self.search.error = Some(error.to_string().into());
+                    self.search.active_downloads.push(SearchDownload {
+                        info,
+                        state: DownloadState::Failed(error.to_string().into()),
+                    });
                 }
             }
         } else {
-            // Fallback: use first available download source
+            // Fallback: search via yt-dlp then download the best match
+            self.search.active_downloads.push(SearchDownload {
+                info: info.clone(),
+                state: DownloadState::Searching,
+            });
+            let dl_index = self.search.active_downloads.len() - 1;
             let sources = crate::download::sources();
-            if let Some(source) = sources.into_iter().next() {
-                let already = self.downloads.jobs.iter().any(|job| {
-                    job.hit.title == info.title
-                        && job.hit.artist == info.artist
-                        && !matches!(
-                            job.state,
-                            downloads::JobState::Failed(_) | downloads::JobState::Cancelled
-                        )
+            let source = sources.into_iter().next().unwrap();
+            let query = download_query.clone();
+            let folder = self.downloads.folder.clone();
+            cx.spawn(async move |this, cx| {
+                // First search to find the real URL
+                let source_for_search = source.clone();
+                let search_result = cx
+                    .background_spawn(async move { source_for_search.search(&query) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    match search_result {
+                        Ok(hits) if !hits.is_empty() => {
+                            let hit = hits[0].clone();
+                            let transfer = Transfer::default();
+                            this.search.active_downloads[dl_index].state =
+                                DownloadState::Downloading(transfer.clone());
+                            cx.notify();
+                            // Now download
+                            let source = source.clone();
+                            cx.spawn(async move |this, cx| {
+                                let result = cx
+                                    .background_spawn(async move {
+                                        std::fs::create_dir_all(&folder)?;
+                                        source.download(&hit, &folder, &transfer)
+                                    })
+                                    .await;
+                                let _ = this.update(cx, |this, cx| {
+                                    this.search.active_downloads[dl_index].state = match result {
+                                        Ok(()) => DownloadState::Done,
+                                        Err(error) => {
+                                            DownloadState::Failed(format!("{error:#}").into())
+                                        }
+                                    };
+                                    if matches!(
+                                        this.search.active_downloads[dl_index].state,
+                                        DownloadState::Done
+                                    ) {
+                                        this.refresh_library_after_download(cx);
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                            .detach();
+                        }
+                        Ok(_) => {
+                            this.search.active_downloads[dl_index].state =
+                                DownloadState::Failed("Aucun résultat trouvé.".into());
+                            cx.notify();
+                        }
+                        Err(error) => {
+                            this.search.active_downloads[dl_index].state =
+                                DownloadState::Failed(format!("{error:#}").into());
+                            cx.notify();
+                        }
+                    }
                 });
-                if already {
-                    return;
-                }
-                let hit = crate::download::Hit {
-                    title: info.title,
-                    artist: info.artist,
-                    seconds: info.duration,
-                    reference: download_query,
-                    thumbnail: info.cover_url,
-                };
-                self.downloads.jobs.push(downloads::Job {
-                    source,
-                    hit,
-                    state: downloads::JobState::Waiting,
-                    transfer: Transfer::default(),
-                });
-                self.start_next_download(cx);
-            }
+            })
+            .detach();
         }
         cx.notify();
     }
@@ -290,6 +384,20 @@ impl Onde {
     ) -> impl IntoElement + use<> {
         let palette = pal();
         let narrow = window.viewport_size().width < px(COMPACT_WIDTH);
+
+        // Update telegram-sent downloads: check if files arrived
+        if let Some(bridge) = &self.downloads.telegram {
+            let file_count = bridge.state.lock().unwrap().files.len();
+            for dl in &mut self.search.active_downloads {
+                if matches!(dl.state, DownloadState::SentToTelegram) {
+                    // Mark as done when telegram has received new files
+                    // (simplified: we can't perfectly match file to request)
+                    if file_count > 0 {
+                        // Keep as SentToTelegram - user sees "Envoyé"
+                    }
+                }
+            }
+        }
 
         let field = div()
             .flex()
@@ -315,6 +423,76 @@ impl Onde {
                     .child(format!("{}▏", self.search.query))
             });
 
+        // Active downloads panel
+        let has_downloads = !self.search.active_downloads.is_empty();
+        let mut dl_panel = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded(px(12.))
+            .bg(palette.rise);
+        for (index, dl) in self.search.active_downloads.iter().enumerate().rev().take(10) {
+            let (label, tint, fraction) = match &dl.state {
+                DownloadState::SentToTelegram => {
+                    ("Envoyé à Telegram — en attente du fichier".to_owned(), GOOD, 0.5)
+                }
+                DownloadState::Searching => {
+                    ("Recherche du morceau…".to_owned(), palette.spark, 0.1)
+                }
+                DownloadState::Downloading(transfer) => {
+                    let p = transfer.progress();
+                    (format!("{:.0} %", p * 100.0), palette.spark, p)
+                }
+                DownloadState::Done => ("Terminé".to_owned(), GOOD, 1.0),
+                DownloadState::Failed(reason) => {
+                    (format!("Échec : {reason}"), ERROR, 1.0)
+                }
+            };
+            dl_panel = dl_panel.child(
+                div()
+                    .id(("search-dl-status", index))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(format!("{} — {}", dl.info.artist, dl.info.title)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(4.))
+                            .w_full()
+                            .rounded(px(2.))
+                            .bg(palette.rise2)
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded(px(2.))
+                                    .w(relative(fraction))
+                                    .bg(tint),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(tint)
+                            .child(label),
+                    ),
+            );
+        }
+
         // Results
         let mut results_list = div().flex().flex_col().gap_1();
         for (index, info) in self.search.results.iter().enumerate() {
@@ -339,10 +517,7 @@ impl Onde {
                     .size(px(56.))
                     .rounded(px(8.))
                     .overflow_hidden()
-                    .child(
-                        img(gpui::ImageSource::Render(image))
-                            .size(px(56.)),
-                    )
+                    .child(img(gpui::ImageSource::Render(image)).size(px(56.)))
                     .into_any_element()
             } else {
                 div()
@@ -359,6 +534,13 @@ impl Onde {
                     .child(initial.to_string())
                     .into_any_element()
             };
+
+            // Check if this track is already being downloaded
+            let downloading = self.search.active_downloads.iter().any(|dl| {
+                dl.info.title == info.title
+                    && dl.info.artist == info.artist
+                    && !matches!(dl.state, DownloadState::Done | DownloadState::Failed(_))
+            });
 
             results_list = results_list.child(
                 div()
@@ -417,11 +599,15 @@ impl Onde {
                                 .child(crate::library::format_time(seconds)),
                         )
                     })
-                    .child(
-                        btn(("search-dl", index), "Télécharger").on_click(
-                            cx.listener(move |this, _, _, cx| this.search_download(index, cx)),
-                        ),
-                    ),
+                    .child(if downloading {
+                        tag("En cours…").into_any_element()
+                    } else {
+                        btn(("search-dl", index), "Télécharger")
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.search_download(index, cx)),
+                            )
+                            .into_any_element()
+                    }),
             );
         }
 
@@ -469,6 +655,7 @@ impl Onde {
                         .child(status),
                 )
             })
+            .when(has_downloads, |page| page.child(dl_panel))
             .child(
                 div()
                     .id("search-results")

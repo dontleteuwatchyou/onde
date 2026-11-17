@@ -548,7 +548,7 @@ impl Onde {
     /// With nothing open, the download folder opens. Otherwise what is open is
     /// listed again, which leaves playback alone: a server may well store its
     /// music in the download folder, and it can't be recognised from here.
-    fn refresh_library_after_download(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn refresh_library_after_download(&mut self, cx: &mut Context<Self>) {
         if self.source.is_some() {
             self.refresh_source(cx);
         } else {
