@@ -31,8 +31,12 @@ jobs:
             libvulkan-dev \
             libwayland-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
+            libxcb-xkb-dev \
+            libxcb-render0-dev \
+            libxcb-xinput-dev \
             libfontconfig1-dev
 
       - uses: dtolnay/rust-toolchain@stable
