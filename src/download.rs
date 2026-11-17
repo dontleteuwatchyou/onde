@@ -26,6 +26,8 @@ pub struct Hit {
     pub seconds: Option<f64>,
     /// What the source needs to fetch it again.
     pub reference: String,
+    /// URL of a thumbnail image, when the source provides one.
+    pub thumbnail: Option<String>,
 }
 
 /// Lets the screen follow a download and stop it.
@@ -322,6 +324,7 @@ fn parse_ytdlp_hits(found: &Value) -> Vec<Hit> {
                 artist: artist.to_owned(),
                 seconds: entry["duration"].as_f64(),
                 reference: reference.to_owned(),
+                thumbnail: entry["thumbnail"].as_str().map(String::from),
             })
         })
         .collect()
@@ -482,6 +485,7 @@ fn parse_archive_hits(found: &Value) -> Vec<Hit> {
                 artist: artist.to_owned(),
                 seconds: None,
                 reference: reference.to_owned(),
+                thumbnail: None,
             })
         })
         .collect()
@@ -608,6 +612,7 @@ mod tests {
             artist: "A".into(),
             seconds: None,
             reference: "https://x/1".into(),
+            thumbnail: None,
         };
         let transfer = Transfer::default();
         source.download(&hit, Path::new("/tmp"), &transfer).unwrap();
@@ -632,6 +637,7 @@ mod tests {
             artist: String::new(),
             seconds: None,
             reference: "https://x/1".into(),
+            thumbnail: None,
         };
         let transfer = Transfer::default();
         let canceller = transfer.clone();
@@ -655,6 +661,7 @@ mod tests {
             artist: String::new(),
             seconds: None,
             reference: "--exec=rm".into(),
+            thumbnail: None,
         };
         assert!(
             source
@@ -725,6 +732,7 @@ mod tests {
             seconds: None,
             // The first video ever posted on YouTube: 19 seconds.
             reference: "https://www.youtube.com/watch?v=jNQXAC9IVRw".into(),
+            thumbnail: None,
         };
         source
             .download(&hit, &folder, &Transfer::default())

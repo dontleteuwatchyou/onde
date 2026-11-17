@@ -10,7 +10,7 @@ use gpui::{ElementId, FontWeight, KeyDownEvent, rgb};
 use super::*;
 use crate::download::{self, DownloadSource, Hit, Transfer};
 
-enum JobState {
+pub(super) enum JobState {
     Waiting,
     Running,
     Done,
@@ -18,29 +18,29 @@ enum JobState {
     Failed(SharedString),
 }
 
-struct Job {
-    source: Arc<dyn DownloadSource>,
-    hit: Hit,
-    state: JobState,
-    transfer: Transfer,
+pub(super) struct Job {
+    pub(super) source: Arc<dyn DownloadSource>,
+    pub(super) hit: Hit,
+    pub(super) state: JobState,
+    pub(super) transfer: Transfer,
 }
 
 pub(super) struct Downloads {
-    telegram: Option<Telegram>,
-    telegram_consent: bool,
+    pub(super) telegram: Option<Telegram>,
+    pub(super) telegram_consent: bool,
     telegram_delete: bool,
     telegram_received: usize,
     sources: Vec<Arc<dyn DownloadSource>>,
     selected: usize,
     telegram_selected: bool,
-    query: String,
+    pub(super) query: String,
     searching: bool,
     /// Bumped on each search, so a slow answer can't replace a newer one.
     request: u64,
     hits: Vec<Hit>,
     searched: bool,
     error: Option<SharedString>,
-    jobs: Vec<Job>,
+    pub(super) jobs: Vec<Job>,
     pub(super) folder: PathBuf,
     /// Set on each keystroke; cleared once the debounced search fires.
     pub(super) last_typed: Option<Instant>,
@@ -310,6 +310,8 @@ impl Onde {
             self.naming.as_mut()
         } else if self.screen == Screen::Downloads {
             Some(&mut self.downloads.query)
+        } else if self.screen == Screen::Search {
+            Some(&mut self.search.query)
         } else if self.library_typing {
             Some(&mut self.library_query)
         } else {
@@ -318,10 +320,15 @@ impl Onde {
     }
 
     fn search_text_changed(&mut self, cx: &mut Context<Self>) {
-        if self.naming.is_none() && self.screen != Screen::Downloads {
+        if self.naming.is_none()
+            && self.screen != Screen::Downloads
+            && self.screen != Screen::Search
+        {
             self.refilter();
         } else if self.screen == Screen::Downloads && self.naming.is_none() {
             self.downloads.last_typed = Some(Instant::now());
+        } else if self.screen == Screen::Search && self.naming.is_none() {
+            self.search.last_typed = Some(Instant::now());
         }
         cx.notify();
     }
@@ -332,6 +339,12 @@ impl Onde {
             if typed.elapsed() >= DEBOUNCE {
                 self.downloads.last_typed = None;
                 self.search(cx);
+            }
+        }
+        if let Some(typed) = self.search.last_typed {
+            if typed.elapsed() >= DEBOUNCE {
+                self.search.last_typed = None;
+                self.run_search(cx);
             }
         }
     }
@@ -372,6 +385,8 @@ impl Onde {
             self.confirm_naming(cx);
         } else if self.screen == Screen::Downloads {
             self.search(cx);
+        } else if self.screen == Screen::Search {
+            self.run_search(cx);
         } else {
             self.library_typing = false;
             cx.notify();
@@ -383,6 +398,8 @@ impl Onde {
             self.naming = None;
             cx.notify();
         } else if self.screen == Screen::Downloads {
+            self.go(Screen::Home, cx);
+        } else if self.screen == Screen::Search {
             self.go(Screen::Home, cx);
         } else {
             self.library_typing = false;
@@ -474,7 +491,7 @@ impl Onde {
     }
 
     /// One at a time: sites dislike parallel downloads, and so does a home connection.
-    fn start_next_download(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn start_next_download(&mut self, cx: &mut Context<Self>) {
         if self.downloads.is_running() {
             return;
         }

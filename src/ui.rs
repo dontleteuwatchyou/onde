@@ -6,6 +6,7 @@ mod downloads;
 mod player;
 mod playlists;
 mod quality;
+mod search;
 mod settings;
 mod setup;
 mod updates;
@@ -106,6 +107,7 @@ enum Screen {
     Playlists,
     Liked,
     Playlist(usize),
+    Search,
     Downloads,
     Sources,
     Settings,
@@ -117,10 +119,11 @@ fn random_seed() -> u64 {
         .map_or(1, |age| age.as_nanos() as u64)
 }
 
-const NAVIGATION: [(&str, &str, Screen); 6] = [
+const NAVIGATION: [(&str, &str, Screen); 7] = [
     ("Accueil", "home", Screen::Home),
     ("Bibliothèque", "lib", Screen::Library),
     ("Playlists", "listplus", Screen::Playlists),
+    ("Recherche", "search", Screen::Search),
     ("Téléchargements", "dl", Screen::Downloads),
     ("Sources", "server", Screen::Sources),
     ("Réglages", "sliders", Screen::Settings),
@@ -218,6 +221,7 @@ pub struct Onde {
     last_tick: Instant,
     last_audio: Instant,
     downloads: downloads::Downloads,
+    search: search::SearchScreen,
     /// First launch, before a music folder was chosen.
     ask_folder: bool,
     /// By album. `None`: being fetched, or there is no picture.
@@ -309,6 +313,7 @@ impl Onde {
             last_tick: Instant::now(),
             last_audio: Instant::now(),
             downloads: downloads::Downloads::new(),
+            search: search::SearchScreen::new(),
             ask_folder: false,
             covers: HashMap::new(),
             covers_wanted: Vec::new(),
@@ -380,6 +385,11 @@ impl Onde {
         self.poll_telegram(cx);
         self.poll_live_search(cx);
         if self.screen == Screen::Downloads && self.downloads.needs_updates() {
+            cx.notify();
+        }
+        if self.screen == Screen::Search
+            && (self.downloads.telegram.is_some() || self.search.last_typed.is_some())
+        {
             cx.notify();
         }
         let Some(engine) = &self.engine else {
@@ -718,11 +728,7 @@ impl Onde {
     }
 
     fn start_search(&mut self, cx: &mut Context<Self>) {
-        self.screen = Screen::Library;
-        self.library_typing = true;
-        self.quality_open = false;
-        self.fullscreen = false;
-        cx.notify();
+        self.go(Screen::Search, cx);
     }
 
     fn change_volume(&mut self, delta: f32, cx: &mut Context<Self>) {
@@ -787,6 +793,40 @@ impl Onde {
                 );
             }
         }
+        let on_search = self.screen == Screen::Search;
+        let search_query = self.search.query.clone();
+        let search_bar = div()
+            .id("top-search")
+            .w(px(260.))
+            .flex_none()
+            .h(px(36.))
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .rounded(px(10.))
+            .bg(palette.rise)
+            .border_1()
+            .border_color(if on_search { palette.tide } else { palette.line })
+            .cursor_text()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.go(Screen::Search, cx);
+            }))
+            .child(icon("search", 16., palette.tx2))
+            .child(if search_query.is_empty() && !on_search {
+                div()
+                    .text_size(px(13.))
+                    .text_color(palette.tx3)
+                    .child("Rechercher une musique…")
+            } else {
+                div().text_size(px(13.)).truncate().child(if on_search {
+                    format!("{search_query}▏")
+                } else if search_query.is_empty() {
+                    "Rechercher une musique…".to_owned()
+                } else {
+                    search_query
+                })
+            });
         div()
             .h(px(56.))
             .flex_none()
@@ -809,6 +849,7 @@ impl Onde {
                     .child(display("onde", 22.)),
             )
             .child(nav)
+            .when(!compact, |top| top.child(search_bar))
     }
 
     fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -846,7 +887,9 @@ impl Render for Onde {
                 && !self.ask_folder
                 && !self.quality_open
                 && self.adding_to.is_none()
-                && (self.screen == Screen::Downloads || self.library_typing));
+                && (self.screen == Screen::Downloads
+                    || self.screen == Screen::Search
+                    || self.library_typing));
         let compact = window.viewport_size().width < px(COMPACT_WIDTH);
         let root = div()
             .track_focus(&self.focus)
@@ -919,6 +962,7 @@ impl Render for Onde {
                     Screen::Playlist(index) => {
                         self.render_collection(Some(*index), window, cx)
                     }
+                    Screen::Search => self.render_search(window, cx).into_any_element(),
                     Screen::Downloads => self.render_downloads(window, cx).into_any_element(),
                     Screen::Sources => self.render_sources(cx).into_any_element(),
                     Screen::Settings => self.render_settings(cx).into_any_element(),
