@@ -944,11 +944,52 @@ impl Onde {
                     .gap_4()
                     .child(display("Recherche", 40.))
                     .child(
-                        mono("Catalogue Deezer · Téléchargement via Telegram")
+                        mono("Catalogue Deezer")
                             .pb_2()
                             .text_color(palette.tx3),
                     ),
             )
+            .child({
+                let use_telegram = self.downloads.telegram_consent;
+                let chip = |id: &'static str, label: &'static str, active: bool| {
+                    let bg = if active { palette.tide } else { palette.deep };
+                    let tx = if active { palette.ink } else { palette.tx2 };
+                    div()
+                        .id(id)
+                        .cursor_pointer()
+                        .px_3()
+                        .py(px(6.))
+                        .rounded(px(20.))
+                        .bg(bg)
+                        .text_size(px(13.))
+                        .text_color(tx)
+                        .child(label)
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(palette.tx3)
+                            .child("Source"),
+                    )
+                    .child(
+                        chip("src-telegram", "Telegram", use_telegram)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.downloads.telegram_consent = true;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        chip("src-youtube", "YouTube", !use_telegram)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.downloads.telegram_consent = false;
+                                cx.notify();
+                            })),
+                    )
+            })
             .child(field)
             .when_some(self.search.error.clone(), |page, error| {
                 page.child(div().text_size(px(13.)).text_color(ERROR).child(error))

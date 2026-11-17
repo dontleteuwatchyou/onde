@@ -201,6 +201,146 @@ impl Onde {
         self.presence_sent = sent;
     }
 
+    fn render_telegram_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        let palette = pal();
+        let has_session = crate::telegram::Telegram::has_session();
+        let bridge_state = self
+            .downloads
+            .telegram
+            .as_ref()
+            .map(|b| b.state.lock().unwrap().clone());
+        let connected = bridge_state
+            .as_ref()
+            .is_some_and(|s| s.connected);
+        let status_text = bridge_state
+            .as_ref()
+            .map(|s| s.status.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                if has_session {
+                    "Session présente".to_owned()
+                } else {
+                    "Non configuré".to_owned()
+                }
+            });
+        let root = dirs::config_dir()
+            .map(|d| d.join("onde/telegram"))
+            .unwrap_or_default();
+        let has_api = root.join("api.env").exists();
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(h2("Telegram"))
+                    .child(
+                        div()
+                            .h(px(8.))
+                            .w(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .bg(if connected { GOOD } else if has_session { palette.tide } else { ERROR }),
+                    )
+                    .child(mono(SharedString::from(status_text.clone())).text_color(palette.tx3)),
+            )
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(palette.tx2)
+                    .child("Télécharge via @DeezLoad2Bot sur Telegram. Envoie un lien Deezer ou une recherche, le bot renvoie le fichier FLAC."),
+            );
+        if !has_api {
+            section = section
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(palette.tx2)
+                        .child("Pour commencer : crée une application sur my.telegram.org/apps, puis lance dans un terminal :"),
+                )
+                .child(
+                    div()
+                        .p_3()
+                        .rounded(px(10.))
+                        .bg(palette.deep)
+                        .font_family("DM Mono")
+                        .text_size(px(12.))
+                        .child("mkdir -p ~/.config/onde/telegram")
+                        .child(
+                            div().child("echo 'ONDE_TELEGRAM_API_ID=ton_id' > ~/.config/onde/telegram/api.env"),
+                        )
+                        .child(
+                            div().child("echo 'ONDE_TELEGRAM_API_HASH=ton_hash' >> ~/.config/onde/telegram/api.env"),
+                        ),
+                );
+        } else {
+            section = section.child(
+                div()
+                    .text_size(px(13.))
+                    .text_color(GOOD)
+                    .child("Clés API configurées."),
+            );
+        }
+        let consent = self.downloads.telegram_consent;
+        let mut actions = div().flex().flex_wrap().gap_2();
+        if !consent {
+            actions = actions.child(
+                btn("tg-settings-accept", "Accepter et connecter")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.downloads.telegram_consent = true;
+                        this.telegram_action("connect", cx);
+                    })),
+            );
+        } else {
+            if !connected {
+                actions = actions.child(
+                    btn("tg-settings-connect", "Connecter")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.telegram_action("connect", cx);
+                        })),
+                );
+            }
+            actions = actions
+                .child(
+                    btn("tg-settings-disconnect", "Déconnecter")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.telegram_action("disconnect", cx);
+                        })),
+                )
+                .child(
+                    ghost("tg-settings-logout", "Révoquer la session")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.telegram_action("logout", cx);
+                        })),
+                );
+        }
+        // Show QR if available
+        if let Some(state) = &bridge_state {
+            if !state.qr.is_empty() {
+                let mut code = div().flex().flex_col().flex_shrink_0().p_2().bg(gpui::rgb(0xFFFFFF)).rounded(px(8.));
+                for row in &state.qr {
+                    let mut line = div().flex().h(px(4.)).flex_shrink_0();
+                    for pixel in row {
+                        line = line.child(
+                            div()
+                                .w(px(4.))
+                                .h(px(4.))
+                                .flex_shrink_0()
+                                .bg(gpui::rgb(if *pixel { 0x000000 } else { 0xFFFFFF })),
+                        );
+                    }
+                    code = code.child(line);
+                }
+                section = section.child(code);
+            }
+        }
+        section = section.child(actions);
+        section
+    }
+
     fn render_discord(&mut self, cx: &mut Context<Self>) -> Div {
         let palette = pal();
         let has_id = self.discord_id_saved;
@@ -588,6 +728,7 @@ impl Onde {
                     .child(visuals_grid),
             )
             .child(div().flex().flex_col().gap_3().child(h2("Thème")).child(themes))
+            .child(self.render_telegram_settings(cx))
             .child(self.render_discord(cx))
             .child(self.render_updates(cx))
             .child(

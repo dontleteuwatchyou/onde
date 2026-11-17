@@ -227,6 +227,8 @@ pub struct Onde {
     search: search::SearchScreen,
     /// First launch, before a music folder was chosen.
     ask_folder: bool,
+    /// Onboarding step (0 = folder, 1 = telegram, 2 = covers/discord).
+    setup_step: u8,
     /// By album. `None`: being fetched, or there is no picture.
     covers: HashMap<String, Option<Arc<CoverArt>>>,
     covers_wanted: Vec<String>,
@@ -320,6 +322,7 @@ impl Onde {
             downloads: downloads::Downloads::new(),
             search: search::SearchScreen::new(),
             ask_folder: false,
+            setup_step: 0,
             covers: HashMap::new(),
             covers_wanted: Vec::new(),
             covers_running: 0,

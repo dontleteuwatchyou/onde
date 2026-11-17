@@ -125,7 +125,7 @@ impl Onde {
         }
     }
 
-    fn telegram_action(&mut self, action: &str, cx: &mut Context<Self>) {
+    pub(super) fn telegram_action(&mut self, action: &str, cx: &mut Context<Self>) {
         let result = (|| -> anyhow::Result<()> {
             if action == "send" && self.downloads.query.trim().is_empty() {
                 anyhow::bail!(
