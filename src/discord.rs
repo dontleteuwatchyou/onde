@@ -3,11 +3,17 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+type Stream = UnixStream;
+#[cfg(windows)]
+type Stream = std::fs::File;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
@@ -103,10 +109,10 @@ impl Drop for Presence {
     }
 }
 
+#[cfg(unix)]
 fn candidates() -> Vec<PathBuf> {
     let mut bases = Vec::new();
     if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) {
-        // Flatpak and Snap keep it in a folder of their own.
         bases.push(runtime.join("app/com.discordapp.Discord"));
         bases.push(runtime.join("snap.discord"));
         bases.push(runtime);
@@ -115,6 +121,13 @@ fn candidates() -> Vec<PathBuf> {
     bases
         .iter()
         .flat_map(|base| (0..10).map(move |n| base.join(format!("discord-ipc-{n}"))))
+        .collect()
+}
+
+#[cfg(windows)]
+fn candidates() -> Vec<PathBuf> {
+    (0..10)
+        .map(|n| PathBuf::from(format!(r"\\?\pipe\discord-ipc-{n}")))
         .collect()
 }
 
@@ -135,7 +148,7 @@ fn run(
     let mut wanted_picture: Option<Picture> = None;
     // Connects from the start, so that the settings tell the truth.
     let mut pending = true;
-    let mut stream: Option<UnixStream> = None;
+    let mut stream: Option<Stream> = None;
     let mut last_sent: Option<Instant> = None;
     loop {
         let wait = match last_sent {
@@ -257,13 +270,12 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<UnixStream> {
+fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<Stream> {
     let mut stream = sockets
         .iter()
         .find_map(|path| open(path))
         .context("Discord n'est pas ouvert")?;
-    stream.set_read_timeout(Some(REPLY_WAIT))?;
-    stream.set_write_timeout(Some(REPLY_WAIT))?;
+    set_timeouts(&stream)?;
     write_frame(
         &mut stream,
         OP_HANDSHAKE,
@@ -279,11 +291,33 @@ fn connect(client_id: &str, sockets: &[PathBuf]) -> Result<UnixStream> {
     Ok(stream)
 }
 
-fn open(path: &Path) -> Option<UnixStream> {
+#[cfg(unix)]
+fn open(path: &Path) -> Option<Stream> {
     UnixStream::connect(path).ok()
 }
 
-fn write_frame(stream: &mut UnixStream, op: u32, payload: &Value) -> Result<()> {
+#[cfg(windows)]
+fn open(path: &Path) -> Option<Stream> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .ok()
+}
+
+#[cfg(unix)]
+fn set_timeouts(stream: &Stream) -> Result<()> {
+    stream.set_read_timeout(Some(REPLY_WAIT))?;
+    stream.set_write_timeout(Some(REPLY_WAIT))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn set_timeouts(_stream: &Stream) -> Result<()> {
+    Ok(())
+}
+
+fn write_frame(stream: &mut Stream, op: u32, payload: &Value) -> Result<()> {
     let body = payload.to_string();
     let mut frame = Vec::with_capacity(body.len() + 8);
     frame.extend_from_slice(&op.to_le_bytes());
@@ -293,7 +327,7 @@ fn write_frame(stream: &mut UnixStream, op: u32, payload: &Value) -> Result<()> 
     Ok(())
 }
 
-fn read_frame(stream: &mut UnixStream) -> Result<(u32, Value)> {
+fn read_frame(stream: &mut Stream) -> Result<(u32, Value)> {
     let mut header = [0; 8];
     stream.read_exact(&mut header)?;
     let op = u32::from_le_bytes(header[..4].try_into()?);
@@ -359,6 +393,7 @@ pub fn valid_client_id(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::net::UnixListener;
 
     fn activity() -> Activity {
@@ -410,15 +445,17 @@ mod tests {
         assert_eq!(valid_client_id("abc456789012345678"), None);
     }
 
-    /// A socket of its own for each test, removed at the end.
+    #[cfg(unix)]
     struct Folder(PathBuf);
 
+    #[cfg(unix)]
     impl Drop for Folder {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
+    #[cfg(unix)]
     fn fake_discord(reply_op: u32) -> (Folder, PathBuf, Receiver<Value>) {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -453,6 +490,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn says_hello_then_sends_the_activity() {
         let (_folder, path, frames) = fake_discord(OP_FRAME);
         let (sender, receiver) = channel();
@@ -470,15 +508,17 @@ mod tests {
         assert_eq!(*status.lock().unwrap(), Status::Connected);
     }
 
+    #[cfg(unix)]
     fn no_cover(_: &str, _: &str, _: &str, _: Option<Picture>) -> Option<String> {
         None
     }
 
+    #[cfg(unix)]
     fn some_cover(_: &str, _: &str, _: &str, _: Option<Picture>) -> Option<String> {
         Some("https://image".into())
     }
 
-    /// The frames until one satisfies the check, which is what the test waits for.
+    #[cfg(unix)]
     fn wait_for(frames: &Receiver<Value>, check: impl Fn(&Value) -> bool) {
         loop {
             let frame = frames.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -489,6 +529,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn the_cover_follows_once_found_and_goes_if_discord_refuses_it() {
         let (_folder, path, frames) = fake_discord(OP_FRAME);
         let (sender, receiver) = channel();
@@ -517,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_known_link_goes_out_with_the_first_frame_without_searching() {
         fn must_not_search(_: &str, _: &str, _: &str, _: Option<Picture>) -> Option<String> {
             panic!("déjà connue");
@@ -538,6 +580,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_refused_identifier_is_reported() {
         let (_folder, path, _frames) = fake_discord(OP_CLOSE);
         let error = connect("42", &[path]).unwrap_err();
@@ -545,6 +588,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn no_socket_means_discord_is_not_open() {
         let error = connect("42", &[PathBuf::from("/nulle/part")]).unwrap_err();
         assert!(error.downcast_ref::<Refused>().is_none());

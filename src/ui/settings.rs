@@ -268,13 +268,17 @@ impl Onde {
                         .bg(palette.deep)
                         .font_family("DM Mono")
                         .text_size(px(12.))
-                        .child("mkdir -p ~/.config/onde/telegram")
-                        .child(
-                            div().child("echo 'ONDE_TELEGRAM_API_ID=ton_id' > ~/.config/onde/telegram/api.env"),
-                        )
-                        .child(
-                            div().child("echo 'ONDE_TELEGRAM_API_HASH=ton_hash' >> ~/.config/onde/telegram/api.env"),
-                        ),
+                        .child(if cfg!(windows) { "mkdir %APPDATA%\\onde\\telegram" } else { "mkdir -p ~/.config/onde/telegram" })
+                        .child(div().child(if cfg!(windows) {
+                            "echo ONDE_TELEGRAM_API_ID=ton_id > %APPDATA%\\onde\\telegram\\api.env"
+                        } else {
+                            "echo 'ONDE_TELEGRAM_API_ID=ton_id' > ~/.config/onde/telegram/api.env"
+                        }))
+                        .child(div().child(if cfg!(windows) {
+                            "echo ONDE_TELEGRAM_API_HASH=ton_hash >> %APPDATA%\\onde\\telegram\\api.env"
+                        } else {
+                            "echo 'ONDE_TELEGRAM_API_HASH=ton_hash' >> ~/.config/onde/telegram/api.env"
+                        })),
                 );
         } else {
             section = section.child(

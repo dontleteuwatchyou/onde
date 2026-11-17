@@ -40,7 +40,11 @@ fn python() -> std::ffi::OsString {
     if let Some(python) = std::env::var_os("ONDE_TELEGRAM_PYTHON") {
         return python;
     }
-    match dirs::data_dir().map(|data| data.join("onde/telegram-venv/bin/python")) {
+    #[cfg(unix)]
+    let venv_python = dirs::data_dir().map(|data| data.join("onde/telegram-venv/bin/python"));
+    #[cfg(windows)]
+    let venv_python = dirs::data_dir().map(|data| data.join("onde/telegram-venv/Scripts/python.exe"));
+    match venv_python {
         Some(venv) if venv.exists() => venv.into(),
         _ => "python3".into(),
     }

@@ -2,6 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -188,15 +189,11 @@ impl YtDlp {
         work: &Path,
         transfer: &Transfer,
     ) -> Result<Option<PathBuf>> {
-        let mut child = self
-            .command()
-            // Onde has no Opus decoder: prefer what it can read as is.
-            .args(["-f", "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"])
+        let mut cmd = self.command();
+        cmd.args(["-f", "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio"])
             .args(["-x", "--audio-format", "mp3>mp3/aac>m4a/m4a"])
             .args(["--audio-quality", "0"])
             .args(["--embed-metadata", "--no-playlist"])
-            // Onde embeds the cover itself: yt-dlp would need an extra program
-            // for that, and a missing one would fail the whole download.
             .args(["--write-thumbnail", "--convert-thumbnails", "jpg"])
             .args(["--ppa", SQUARE_COVER])
             .args([
@@ -214,11 +211,10 @@ impl YtDlp {
             .arg("--")
             .arg(&hit.reference)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // Its own group, so cancelling also stops what it started (ffmpeg).
-            .process_group(0)
-            .spawn()
-            .map_err(missing_program)?;
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = cmd.spawn().map_err(missing_program)?;
         let stdout = child.stdout.take().context("sortie de yt-dlp")?;
         let mut stderr = child.stderr.take().context("sortie de yt-dlp")?;
         // Read in parallel: a full pipe would block yt-dlp.
@@ -555,10 +551,13 @@ fn encode_path(path: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
+    #[cfg(unix)]
     fn fake_ytdlp(name: &str, script: &str) -> YtDlp {
+        use std::os::unix::fs::PermissionsExt;
         let folder = PathBuf::from("target").join("fake-ytdlp");
         fs::create_dir_all(&folder).unwrap();
         let path = folder.join(name);
@@ -595,6 +594,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn search_passes_the_query_as_one_argument() {
         let source = fake_ytdlp(
             "search",
@@ -605,6 +605,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn download_reports_progress_and_errors() {
         let source = fake_ytdlp("ok", "echo 'onde 1 4'; echo 'onde 4 4'");
         let hit = Hit {
@@ -629,6 +630,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cancelling_stops_the_program_and_what_it_started() {
         // `sleep` keeps the output open: stopping only the shell would hang here.
         let source = fake_ytdlp("long", "sleep 30; echo fini");
@@ -654,6 +656,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn refuses_to_download_anything_but_https() {
         let source = fake_ytdlp("never", "exit 0");
         let hit = Hit {
@@ -671,6 +674,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn says_when_ytdlp_is_missing() {
         let mut source = fake_ytdlp("absent", "");
         source.program = "/nulle/part/yt-dlp".into();
