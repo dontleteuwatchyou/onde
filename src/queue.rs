@@ -87,6 +87,13 @@ impl Queue {
         self.arrange(Some(first), seed);
     }
 
+    /// Clears the upcoming queue and context, keeping only the current track.
+    pub fn clear_upcoming(&mut self) {
+        self.context.clear();
+        self.order.clear();
+        self.queued.clear();
+    }
+
     /// Adds tracks after the current context, preserving their given order.
     pub fn enqueue(&mut self, tracks: impl IntoIterator<Item = usize>) {
         self.queued

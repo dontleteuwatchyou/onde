@@ -260,6 +260,45 @@ impl Onde {
             )
     }
 
+    pub(super) fn update_shared_library(&self) {
+        if let Ok(mut lib) = self.shared_library.write() {
+            lib.tracks = self.queue.tracks.clone();
+            lib.catalog = self.catalog.clone();
+            lib.source = self.source.clone();
+        }
+    }
+
+    pub(super) fn toggle_server(&mut self, cx: &mut Context<Self>) {
+        if self.subsonic_server.is_some() {
+            if let Some(server) = self.subsonic_server.take() {
+                server.stop();
+            }
+            self.save_settings(|settings| settings.server_enabled = false);
+        } else {
+            self.start_server(cx);
+            self.save_settings(|settings| settings.server_enabled = true);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn start_server(&mut self, _cx: &mut Context<Self>) {
+        let settings = config::load();
+        let port = settings.server_port.unwrap_or(4533);
+        let user = settings.server_user.clone().unwrap_or_else(|| "onde".into());
+        let password = settings.server_password.clone().unwrap_or_else(|| "onde".into());
+        self.update_shared_library();
+        match crate::server::SubsonicServer::start(port, user, password, self.shared_library.clone())
+        {
+            Ok(server) => {
+                self.subsonic_server = Some(server);
+                self.message = None;
+            }
+            Err(error) => {
+                self.message = Some(format!("Serveur impossible : {error:#}").into());
+            }
+        }
+    }
+
     pub(super) fn save_settings(&mut self, change: impl FnOnce(&mut config::Config)) {
         let mut settings = config::load();
         change(&mut settings);
@@ -343,6 +382,38 @@ impl Onde {
                         )
                     }),
             )
+            .child({
+                let server_on = self.subsonic_server.is_some();
+                let port = settings.server_port.unwrap_or(4533);
+                let user = settings.server_user.clone().unwrap_or_else(|| "onde".into());
+                let pass = settings.server_password.clone().unwrap_or_else(|| "onde".into());
+                card()
+                    .child(source_title(
+                        "Serveur Subsonic",
+                        server_on,
+                        if server_on { "Actif" } else { "Arrêté" },
+                    ))
+                    .child(
+                        detail(format!(
+                            "Port {port} · utilisateur : {user} · mot de passe : {pass}"
+                        )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(palette.tx2)
+                            .child("Ouvre un serveur compatible Subsonic pour écouter ta bibliothèque depuis une appli mobile (Ultrasonic, Symfonium, Substreamer…)."),
+                    )
+                    .child(
+                        div().flex().gap_2().child(
+                            btn(
+                                "toggle-server",
+                                if server_on { "Arrêter le serveur" } else { "Démarrer le serveur" },
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_server(cx))),
+                        ),
+                    )
+            })
             .child(
                 card()
                     .child(source_title("Spotify", false, "Pas encore branché"))

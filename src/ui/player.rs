@@ -348,6 +348,14 @@ impl Onde {
                     .p_4()
                     .child(h2("File d’attente").flex_1())
                     .child(mono(format!("{count} à suivre")).text_color(palette.tx2))
+                    .when(count > 0, |row| {
+                        row.child(
+                            ghost("queue-clear", "Vider").on_click(cx.listener(|this, _, _, cx| {
+                                this.queue.clear_upcoming();
+                                cx.notify();
+                            })),
+                        )
+                    })
                     .child(
                         icon_small("queue-close", "close")
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_queue(cx))),
