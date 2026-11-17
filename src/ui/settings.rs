@@ -68,6 +68,19 @@ impl Onde {
         cx.notify();
     }
 
+    pub(super) fn apply_cover_theme(&mut self, cx: &mut Context<Self>) {
+        let key = self
+            .queue
+            .current
+            .and_then(|i| self.queue.tracks.get(i))
+            .map(super::album_key);
+        let accent = key.and_then(|key| self.art(&key, cx)).map(|art| art.accent);
+        if let Some(accent) = accent {
+            set_palette(Palette::from_accent(accent));
+        }
+        cx.notify();
+    }
+
     pub(super) fn set_visual(&mut self, visual: Visual, cx: &mut Context<Self>) {
         self.visual = visual;
         self.save_settings(|settings| settings.visual = Some(visual.name().to_owned()));
@@ -485,6 +498,45 @@ impl Onde {
                             .child(div().size(px(16.)).rounded_full().bg(swatch.spark)),
                     )
                     .child(div().text_size(px(13.)).child(name)),
+            );
+        }
+        {
+            let on = palette.name == "Pochette";
+            let swatch = if on {
+                palette
+            } else {
+                Palette::from_accent(gpui::Rgba { r: 0.4, g: 0.2, b: 0.6, a: 1.0 })
+            };
+            themes = themes.child(
+                div()
+                    .id("theme-pochette")
+                    .w(px(120.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.save_settings(|settings| settings.theme = Some("Pochette".to_owned()));
+                        this.apply_cover_theme(cx);
+                    }))
+                    .child(
+                        div()
+                            .h(px(64.))
+                            .rounded(px(10.))
+                            .border_2()
+                            .border_color(if on { palette.spark } else { palette.line })
+                            .bg(linear_gradient(
+                                135.,
+                                linear_color_stop(swatch.ink, 0.3),
+                                linear_color_stop(swatch.tide, 1.),
+                            ))
+                            .flex()
+                            .items_end()
+                            .justify_end()
+                            .p_2()
+                            .child(div().size(px(16.)).rounded_full().bg(swatch.spark)),
+                    )
+                    .child(div().text_size(px(13.)).child("Pochette")),
             );
         }
         let mut keys = div().flex().flex_col().gap_1();

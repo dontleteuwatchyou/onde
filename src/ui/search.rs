@@ -27,10 +27,14 @@ pub(super) struct MusicInfo {
     pub album: String,
     pub duration: Option<f64>,
     pub cover_url: Option<String>,
+    pub deezer_link: Option<String>,
 }
 
 pub(super) enum DownloadState {
+    WaitingForConnection { query: String, folder: String },
     SentToTelegram,
+    WaitingForChoice(Vec<crate::telegram::MenuButton>),
+    WaitingForFile,
     Searching,
     Downloading(Transfer),
     Done,
@@ -40,6 +44,8 @@ pub(super) enum DownloadState {
 pub(super) struct SearchDownload {
     pub info: MusicInfo,
     pub state: DownloadState,
+    /// File count at the moment this download was sent — used to detect new arrivals.
+    files_at_send: usize,
 }
 
 pub(super) struct SearchScreen {
@@ -53,8 +59,6 @@ pub(super) struct SearchScreen {
     covers: HashMap<String, Option<Arc<RenderImage>>>,
     covers_loading: usize,
     pub(super) active_downloads: Vec<SearchDownload>,
-    /// Number of buttons last seen from bridge — used to detect new inline results.
-    last_button_count: usize,
 }
 
 impl SearchScreen {
@@ -70,7 +74,6 @@ impl SearchScreen {
             covers: HashMap::new(),
             covers_loading: 0,
             active_downloads: Vec::new(),
-            last_button_count: 0,
         }
     }
 
@@ -78,7 +81,9 @@ impl SearchScreen {
         self.active_downloads.iter().any(|dl| {
             matches!(
                 dl.state,
-                DownloadState::SentToTelegram
+                DownloadState::WaitingForConnection { .. }
+                    | DownloadState::SentToTelegram
+                    | DownloadState::WaitingForFile
                     | DownloadState::Searching
                     | DownloadState::Downloading(_)
             )
@@ -115,6 +120,7 @@ fn deezer_search(query: &str) -> anyhow::Result<Vec<MusicInfo>> {
                 cover_url: item["album"]["cover_medium"]
                     .as_str()
                     .map(String::from),
+                deezer_link: item["link"].as_str().map(String::from),
             })
         })
         .collect())
@@ -220,10 +226,26 @@ impl Onde {
         let Some(info) = self.search.results.get(index).cloned() else {
             return;
         };
-        let download_query = if info.artist.is_empty() {
+        let plain_query = if info.artist.is_empty() {
             info.title.clone()
         } else {
             format!("{} - {}", info.artist, info.title)
+        };
+        let telegram_query = if let Some(link) = &info.deezer_link {
+            link.clone()
+        } else {
+            let clean = |s: &str| {
+                let s = if let Some(i) = s.find('(') { s[..i].trim() } else { s.trim() };
+                let s = if let Some(i) = s.find('[') { s[..i].trim() } else { s };
+                s.to_owned()
+            };
+            let clean_title = clean(&info.title);
+            let clean_artist = clean(&info.artist);
+            if clean_artist.is_empty() {
+                format!(".trk {clean_title}")
+            } else {
+                format!(".trk {clean_artist} {clean_title}")
+            }
         };
 
         // Check if already downloading this track
@@ -253,19 +275,12 @@ impl Onde {
                         self.search.active_downloads.push(SearchDownload {
                             info,
                             state: DownloadState::Failed(format!("{error:#}").into()),
+                            files_at_send: 0,
                         });
                         cx.notify();
                         return;
                     }
                 }
-                self.search.active_downloads.push(SearchDownload {
-                    info,
-                    state: DownloadState::Failed(
-                        "Telegram relancé, réessayer dans quelques secondes.".into(),
-                    ),
-                });
-                cx.notify();
-                return;
             }
             let connected = self
                 .downloads
@@ -273,11 +288,14 @@ impl Onde {
                 .as_ref()
                 .is_some_and(|bridge| bridge.state.lock().unwrap().connected);
             if !connected {
+                let folder = config::load().music_folder.unwrap_or_default().to_string_lossy().to_string();
                 self.search.active_downloads.push(SearchDownload {
                     info,
-                    state: DownloadState::Failed(
-                        "Telegram non connecté. Aller dans Téléchargements pour connecter.".into(),
-                    ),
+                    state: DownloadState::WaitingForConnection {
+                        query: telegram_query,
+                        folder,
+                    },
+                    files_at_send: 0,
                 });
                 cx.notify();
                 return;
@@ -287,27 +305,35 @@ impl Onde {
                 self.search.active_downloads.push(SearchDownload {
                     info,
                     state: DownloadState::Failed("Choisir le dossier musical d'abord.".into()),
+                    files_at_send: 0,
                 });
                 cx.notify();
                 return;
             };
             let bridge = self.downloads.telegram.as_mut().unwrap();
+            let current_files = {
+                let mut st = bridge.state.lock().unwrap();
+                st.buttons.clear();
+                st.files.len()
+            };
             match bridge.send(json!({
                 "action": "send",
-                "text": download_query,
+                "text": telegram_query,
                 "folder": folder,
             })) {
                 Ok(()) => {
                     self.search.active_downloads.push(SearchDownload {
                         info,
                         state: DownloadState::SentToTelegram,
-                    });
+                        files_at_send: current_files,
+                        });
                 }
                 Err(error) => {
                     self.search.active_downloads.push(SearchDownload {
                         info,
                         state: DownloadState::Failed(error.to_string().into()),
-                    });
+                        files_at_send: 0,
+                        });
                 }
             }
         } else {
@@ -315,11 +341,12 @@ impl Onde {
             self.search.active_downloads.push(SearchDownload {
                 info: info.clone(),
                 state: DownloadState::Searching,
+                files_at_send: 0,
             });
             let dl_index = self.search.active_downloads.len() - 1;
             let sources = crate::download::sources();
             let source = sources.into_iter().next().unwrap();
-            let query = download_query.clone();
+            let query = plain_query.clone();
             let folder = self.downloads.folder.clone();
             cx.spawn(async move |this, cx| {
                 // First search to find the real URL
@@ -380,6 +407,171 @@ impl Onde {
         cx.notify();
     }
 
+    /// Drive Telegram inline downloads: auto-click the best-matching result and mark Done on file arrival.
+    /// Called from tick() so it runs regardless of which screen is visible.
+    pub(super) fn tick_search_downloads(&mut self) {
+        let (buttons, file_count, busy, status, connected) = self
+            .downloads
+            .telegram
+            .as_ref()
+            .map(|b| {
+                let st = b.state.lock().unwrap();
+                (st.buttons.clone(), st.files.len(), st.busy, st.status.clone(), st.connected)
+            })
+            .unwrap_or_default();
+
+        // Auto-send queued downloads once Telegram connects.
+        if connected {
+            for dl in &mut self.search.active_downloads {
+                if let DownloadState::WaitingForConnection { query, folder } = &dl.state {
+                    let query = query.clone();
+                    let folder = folder.clone();
+                    if let Some(bridge) = &mut self.downloads.telegram {
+                        let current_files = {
+                            let mut st = bridge.state.lock().unwrap();
+                            st.buttons.clear();
+                            st.files.len()
+                        };
+                        if bridge.send(json!({
+                            "action": "send",
+                            "text": query,
+                            "folder": folder,
+                        })).is_ok() {
+                            dl.files_at_send = current_files;
+                            dl.state = DownloadState::SentToTelegram;
+                        } else {
+                            dl.state = DownloadState::Failed("Envoi échoué.".into());
+                        }
+                    }
+                    break; // one at a time
+                }
+            }
+        }
+
+        // When bot returns inline results, show them as choices instead of auto-clicking.
+        if let Some(dl) = self
+            .search
+            .active_downloads
+            .iter_mut()
+            .find(|dl| matches!(dl.state, DownloadState::SentToTelegram))
+        {
+            if !buttons.is_empty() {
+                dl.state = DownloadState::WaitingForChoice(buttons);
+            } else if !busy && status.contains("Échec") {
+                dl.state = DownloadState::Failed(status.into());
+            }
+        }
+
+        for dl in &mut self.search.active_downloads {
+            if matches!(dl.state, DownloadState::WaitingForFile) && file_count > dl.files_at_send {
+                dl.state = DownloadState::Done;
+            }
+        }
+    }
+
+    pub(super) fn pick_bot_result(&mut self, dl_index: usize, key: String) {
+        if let Some(bridge) = &mut self.downloads.telegram {
+            let _ = bridge.send(json!({"action": "click", "key": key}));
+        }
+        if let Some(dl) = self.search.active_downloads.get_mut(dl_index) {
+            dl.state = DownloadState::WaitingForFile;
+        }
+    }
+
+    /// Renders active search downloads for the Téléchargements panel.
+    pub(super) fn render_search_downloads_panel(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let palette = pal();
+        let mut panel = div().flex().flex_col().gap_2();
+        for (dl_index, dl) in self.search.active_downloads.iter().enumerate().rev().take(20) {
+            let (label, tint, fraction) = match &dl.state {
+                DownloadState::WaitingForConnection { .. } => {
+                    ("Connexion à Telegram…".to_owned(), palette.tx3, 0.1)
+                }
+                DownloadState::SentToTelegram => {
+                    ("En attente du bot…".to_owned(), palette.tx3, 0.3)
+                }
+                DownloadState::WaitingForChoice(_) => {
+                    ("Choisis un résultat".to_owned(), palette.spark, 0.3)
+                }
+                DownloadState::WaitingForFile => {
+                    ("En attente du fichier…".to_owned(), GOOD, 0.5)
+                }
+                DownloadState::Searching => ("Recherche…".to_owned(), palette.spark, 0.1),
+                DownloadState::Downloading(transfer) => {
+                    let p = transfer.progress();
+                    (format!("{:.0} %", p * 100.0), palette.spark, p)
+                }
+                DownloadState::Done => ("Terminé".to_owned(), GOOD, 1.0),
+                DownloadState::Failed(reason) => {
+                    (format!("Échec : {reason}"), ERROR, 1.0)
+                }
+            };
+            let removable = matches!(
+                dl.state,
+                DownloadState::Done | DownloadState::Failed(_)
+            );
+            panel = panel.child(
+                div()
+                    .id(("sdl", dl_index))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(13.))
+                                    .child(format!("{} — {}", dl.info.artist, dl.info.title)),
+                            )
+                            .child(
+                                div()
+                                    .h(px(4.))
+                                    .w_full()
+                                    .rounded(px(2.))
+                                    .bg(palette.rise2)
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .rounded(px(2.))
+                                            .w(relative(fraction as f32))
+                                            .bg(tint),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(tint)
+                                    .child(label),
+                            ),
+                    )
+                    .when(removable, |row| {
+                        row.child(
+                            widgets::icon_small(("rm-sdl", dl_index), "close").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if dl_index < this.search.active_downloads.len() {
+                                        this.search.active_downloads.remove(dl_index);
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                    }),
+            );
+        }
+        panel
+    }
+
     pub(super) fn render_search(
         &mut self,
         window: &Window,
@@ -387,41 +579,6 @@ impl Onde {
     ) -> impl IntoElement + use<> {
         let palette = pal();
         let narrow = window.viewport_size().width < px(COMPACT_WIDTH);
-
-        // Auto-click the first inline result when buttons arrive for a pending download.
-        let (buttons, file_count) = self
-            .downloads
-            .telegram
-            .as_ref()
-            .map(|b| {
-                let st = b.state.lock().unwrap();
-                (st.buttons.clone(), st.files.len())
-            })
-            .unwrap_or_default();
-
-        let has_pending = self
-            .search
-            .active_downloads
-            .iter()
-            .any(|dl| matches!(dl.state, DownloadState::SentToTelegram));
-
-        if has_pending && !buttons.is_empty() && buttons.len() != self.search.last_button_count {
-            self.search.last_button_count = buttons.len();
-            if let Some(first) = buttons.first() {
-                if let Some(bridge) = &mut self.downloads.telegram {
-                    let _ = bridge.send(json!({"action": "click", "key": first.key}));
-                }
-            }
-        }
-
-        // Mark downloads as Done when new files arrive
-        if file_count > 0 {
-            for dl in &mut self.search.active_downloads {
-                if matches!(dl.state, DownloadState::SentToTelegram) {
-                    dl.state = DownloadState::Done;
-                }
-            }
-        }
 
         let field = div()
             .flex()
@@ -447,74 +604,199 @@ impl Onde {
                     .child(format!("{}▏", self.search.query))
             });
 
+        // Telegram bridge status
+        let tg_state = self
+            .downloads
+            .telegram
+            .as_ref()
+            .map(|b| {
+                let st = b.state.lock().unwrap();
+                (st.status.clone(), st.buttons.len(), st.connected)
+            });
+
         // Active downloads panel
         let has_downloads = !self.search.active_downloads.is_empty();
         let mut dl_panel = div()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .p_3()
             .rounded(px(12.))
             .bg(palette.rise);
         for (index, dl) in self.search.active_downloads.iter().enumerate().rev().take(10) {
-            let (label, tint, fraction) = match &dl.state {
+            let mut entry = div()
+                .id(("search-dl-status", index))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(format!("{} — {}", dl.info.artist, dl.info.title)),
+                        )
+                        .child(
+                            widgets::icon_small(("rm-dl", index), "close").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    if index < this.search.active_downloads.len() {
+                                        this.search.active_downloads.remove(index);
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        ),
+                );
+            match &dl.state {
+                DownloadState::WaitingForConnection { .. } => {
+                    entry = entry.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(palette.tx3)
+                            .child("Connexion à Telegram en cours…"),
+                    );
+                }
                 DownloadState::SentToTelegram => {
-                    ("Envoyé à Telegram — en attente du fichier".to_owned(), GOOD, 0.5)
+                    let status_text = tg_state
+                        .as_ref()
+                        .map(|(s, _, _)| s.as_str())
+                        .unwrap_or("Recherche sur Telegram…");
+                    entry = entry.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(palette.tx3)
+                            .child(status_text.to_owned()),
+                    );
+                }
+                DownloadState::WaitingForChoice(choices) => {
+                    entry = entry.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(palette.spark)
+                            .child("Choisis le bon résultat :"),
+                    );
+                    let mut buttons = div().flex().flex_col().gap_1();
+                    for (ci, choice) in choices.iter().enumerate() {
+                        let key = choice.key.clone();
+                        buttons = buttons.child(
+                            div()
+                                .id(("bot-choice", index * 100 + ci))
+                                .px_3()
+                                .py_2()
+                                .rounded(px(8.))
+                                .bg(palette.rise2)
+                                .cursor_pointer()
+                                .hover(|row| row.bg(pal().tide))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(1.))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(choice.label.clone()),
+                                        )
+                                        .when(!choice.details.is_empty(), |col| {
+                                            col.child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .text_color(pal().tx2)
+                                                    .child(choice.details.clone()),
+                                            )
+                                        }),
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.pick_bot_result(index, key.clone());
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    entry = entry.child(buttons);
+                }
+                DownloadState::WaitingForFile => {
+                    entry = entry
+                        .child(
+                            div()
+                                .h(px(4.))
+                                .w_full()
+                                .rounded(px(2.))
+                                .bg(palette.rise2)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .rounded(px(2.))
+                                        .w(relative(0.5))
+                                        .bg(GOOD),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(GOOD)
+                                .child("En attente du fichier…"),
+                        );
                 }
                 DownloadState::Searching => {
-                    ("Recherche du morceau…".to_owned(), palette.spark, 0.1)
+                    entry = entry.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(palette.spark)
+                            .child("Recherche du morceau…"),
+                    );
                 }
                 DownloadState::Downloading(transfer) => {
                     let p = transfer.progress();
-                    (format!("{:.0} %", p * 100.0), palette.spark, p)
+                    entry = entry
+                        .child(
+                            div()
+                                .h(px(4.))
+                                .w_full()
+                                .rounded(px(2.))
+                                .bg(palette.rise2)
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .rounded(px(2.))
+                                        .w(relative(p as f32))
+                                        .bg(palette.spark),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(palette.spark)
+                                .child(format!("{:.0} %", p * 100.0)),
+                        );
                 }
-                DownloadState::Done => ("Terminé".to_owned(), GOOD, 1.0),
-                DownloadState::Failed(reason) => {
-                    (format!("Échec : {reason}"), ERROR, 1.0)
-                }
-            };
-            dl_panel = dl_panel.child(
-                div()
-                    .id(("search-dl-status", index))
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(format!("{} — {}", dl.info.artist, dl.info.title)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .h(px(4.))
-                            .w_full()
-                            .rounded(px(2.))
-                            .bg(palette.rise2)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded(px(2.))
-                                    .w(relative(fraction))
-                                    .bg(tint),
-                            ),
-                    )
-                    .child(
+                DownloadState::Done => {
+                    entry = entry.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(tint)
-                            .child(label),
-                    ),
-            );
+                            .text_color(GOOD)
+                            .child("Terminé"),
+                    );
+                }
+                DownloadState::Failed(reason) => {
+                    entry = entry.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(ERROR)
+                            .child(format!("Échec : {reason}")),
+                    );
+                }
+            }
+            dl_panel = dl_panel.child(entry);
         }
 
         // Results

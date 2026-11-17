@@ -227,10 +227,21 @@ impl Onde {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_fullscreen(cx))),
                 );
         } else if let Some(first) = first {
-            buttons = buttons.child(
-                primary("hero-start", "Écouter")
-                    .on_click(cx.listener(move |this, _, _, cx| this.start(first, cx))),
-            );
+            let all: Vec<usize> = (0..self.queue.tracks.len()).collect();
+            let all_shuffle = all.clone();
+            buttons = buttons
+                .child(
+                    primary("hero-start", "Écouter tout")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.start_in(first, all.clone(), cx);
+                        })),
+                )
+                .child(
+                    btn("hero-shuffle", "Aléatoire")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.start_shuffled_in(first, all_shuffle.clone(), cx);
+                        })),
+                );
         } else {
             buttons = buttons
                 .child(
@@ -454,6 +465,14 @@ impl Onde {
                     move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.open_add_menu(index, cx);
+                    },
+                )),
+            )
+            .child(
+                icon_small(("delete", index), "trash").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.delete_track(index, cx);
                     },
                 )),
             )

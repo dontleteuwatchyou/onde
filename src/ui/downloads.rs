@@ -297,10 +297,10 @@ impl Onde {
     }
 
     pub(super) fn toggle_downloads(&mut self, cx: &mut Context<Self>) {
-        let target = if self.screen == Screen::Downloads {
+        let target = if self.screen == Screen::Search {
             Screen::Home
         } else {
-            Screen::Downloads
+            Screen::Search
         };
         self.go(target, cx);
     }
@@ -308,8 +308,8 @@ impl Onde {
     fn search_text(&mut self) -> Option<&mut String> {
         if self.naming.is_some() {
             self.naming.as_mut()
-        } else if self.screen == Screen::Downloads {
-            Some(&mut self.downloads.query)
+        } else if self.browse_for_playlist.is_some() {
+            Some(&mut self.browse_query)
         } else if self.screen == Screen::Search {
             Some(&mut self.search.query)
         } else if self.library_typing {
@@ -320,13 +320,10 @@ impl Onde {
     }
 
     fn search_text_changed(&mut self, cx: &mut Context<Self>) {
-        if self.naming.is_none()
-            && self.screen != Screen::Downloads
-            && self.screen != Screen::Search
-        {
+        if self.browse_for_playlist.is_some() {
+            // just redraw the modal
+        } else if self.naming.is_none() && self.screen != Screen::Search {
             self.refilter();
-        } else if self.screen == Screen::Downloads && self.naming.is_none() {
-            self.downloads.last_typed = Some(Instant::now());
         } else if self.screen == Screen::Search && self.naming.is_none() {
             self.search.last_typed = Some(Instant::now());
         }
@@ -383,8 +380,8 @@ impl Onde {
     pub(super) fn submit_search(&mut self, cx: &mut Context<Self>) {
         if self.naming.is_some() {
             self.confirm_naming(cx);
-        } else if self.screen == Screen::Downloads {
-            self.search(cx);
+        } else if self.browse_for_playlist.is_some() {
+            // Enter does nothing special in the browse modal
         } else if self.screen == Screen::Search {
             self.run_search(cx);
         } else {
@@ -397,8 +394,10 @@ impl Onde {
         if self.naming.is_some() {
             self.naming = None;
             cx.notify();
-        } else if self.screen == Screen::Downloads {
-            self.go(Screen::Home, cx);
+        } else if self.browse_for_playlist.is_some() {
+            self.browse_for_playlist = None;
+            self.browse_query.clear();
+            cx.notify();
         } else if self.screen == Screen::Search {
             self.go(Screen::Home, cx);
         } else {
@@ -872,15 +871,22 @@ impl Onde {
                                 .flex_col()
                                 .gap_3()
                                 .child(h2("En cours"))
-                                .when(state.jobs.is_empty(), |panel| {
-                                    panel.child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .text_color(palette.tx2)
-                                            .child("Ce que tu télécharges s’affiche ici."),
-                                    )
-                                })
-                                .child(jobs),
+                                .when(
+                                    state.jobs.is_empty()
+                                        && self.search.active_downloads.is_empty(),
+                                    |panel| {
+                                        panel.child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(palette.tx2)
+                                                .child(
+                                                    "Ce que tu télécharges s’affiche ici.",
+                                                ),
+                                        )
+                                    },
+                                )
+                                .child(jobs)
+                                .child(self.render_search_downloads_panel(cx)),
                         )
                     }),
             )

@@ -8,6 +8,7 @@ use image::{Frame, RgbaImage};
 use smallvec::SmallVec;
 
 use super::*;
+use crate::config;
 use crate::visuals::{CoverGrid, GRID};
 
 const SIDE: u32 = 320;
@@ -109,8 +110,19 @@ impl Onde {
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.covers_running -= 1;
-                    this.covers.insert(key, art);
+                    let has_art = art.is_some();
+                    this.covers.insert(key.clone(), art);
                     this.fetch_covers(cx);
+                    if has_art && config::load().theme.as_deref() == Some("Pochette") {
+                        let current_key = this
+                            .queue
+                            .current
+                            .and_then(|i| this.queue.tracks.get(i))
+                            .map(super::album_key);
+                        if current_key.as_deref() == Some(&key) {
+                            this.apply_cover_theme(cx);
+                        }
+                    }
                     cx.notify();
                 });
             })

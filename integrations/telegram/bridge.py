@@ -51,7 +51,7 @@ def result_details(result):
 
 def query_error(text):
     if not text.strip():
-        return 'Saisir un titre, un artiste ou un lien dans le champ de recherche avant l’envoi.'
+        return "Saisir un titre, un artiste ou un lien dans le champ de recherche avant l'envoi."
     if len(text.strip()) > 4096:
         return 'Recherche trop longue : maximum 4096 caractères.'
     return None
@@ -309,7 +309,7 @@ async def main():
                         watch_until = time.monotonic() + 30
         if expected:
             expected = 0
-            emit(status='Le bot n’a pas envoyé le fichier après 3 minutes : cliquer à nouveau pour réessayer.')
+            emit(status="Le bot n'a pas envoyé le fichier après 3 minutes : cliquer à nouveau pour réessayer.")
             requested.clear()
 
     async def incoming(event):
@@ -369,13 +369,6 @@ async def main():
             inline_results.clear()
             menus.clear()
             request = None
-            if not text.startswith(('https://', 'http://')):
-                # Answers in under a second and posts nothing, unlike sending the text
-                # to the bot, whose menu can take over a minute to come back.
-                emit(buttons=[], status='Recherche…')
-                show_results(await asyncio.wait_for(client(functions.messages.GetInlineBotResultsRequest(
-                    bot=bot, peer=bot, query=text, offset='')), 30))
-                return
             emit(buttons=[])
             # NewMessage handler awaits request assignment through this single event loop.
             early.clear()
@@ -389,7 +382,7 @@ async def main():
             for event in early:
                 await incoming(event)
             early.clear()
-            emit(status='Lien envoyé au bot : réception automatique dès qu’il répond.')
+            emit(status="Envoyé au bot : réception automatique dès qu'il répond.")
         elif action == 'click':
             key = cmd.get('key')
             if key in inline_results:
@@ -400,7 +393,7 @@ async def main():
                 await client(functions.messages.SendInlineBotResultRequest(
                     peer=bot, query_id=query_id, id=result_id))
                 requested.add(key)
-                emit(status=f'Le bot prépare « {label} »… Réception automatique dès qu’il est prêt.')
+                emit(status=f"Le bot prépare « {label} »… Réception automatique dès qu'il est prêt.")
                 expected += 1
                 watch_until = time.monotonic() + BOT_PREPARE_SECONDS
                 if not watcher or watcher.done():

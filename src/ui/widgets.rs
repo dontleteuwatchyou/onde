@@ -85,6 +85,7 @@ pub fn btn(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful
         .bg(palette.rise2)
         .text_color(palette.tx)
         .hover(|button| button.bg(pal().tide))
+        .active(|button| button.opacity(0.8))
 }
 
 /// The one main action of a page.
@@ -177,7 +178,18 @@ pub fn mono(text: impl Into<SharedString>) -> Div {
 /// The cover, or a tide of color while there is none.
 pub fn cover(art: Option<&Arc<CoverArt>>, size: f32, radius: f32) -> Div {
     let palette = pal();
-    let frame = div().size(px(size)).flex_none().rounded(px(radius));
+    let frame = div()
+        .size(px(size))
+        .flex_none()
+        .rounded(px(radius))
+        .when(size >= 100., |frame| {
+            frame.shadow(vec![BoxShadow {
+                color: alpha(palette.deep, 0.7).into(),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(size * 0.2),
+                spread_radius: px(0.),
+            }])
+        });
     match art {
         Some(art) => frame.child(
             img(art.image.clone())

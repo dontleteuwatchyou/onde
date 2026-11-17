@@ -119,12 +119,11 @@ fn random_seed() -> u64 {
         .map_or(1, |age| age.as_nanos() as u64)
 }
 
-const NAVIGATION: [(&str, &str, Screen); 7] = [
+const NAVIGATION: [(&str, &str, Screen); 6] = [
     ("Accueil", "home", Screen::Home),
     ("Bibliothèque", "lib", Screen::Library),
     ("Playlists", "listplus", Screen::Playlists),
     ("Recherche", "search", Screen::Search),
-    ("Téléchargements", "dl", Screen::Downloads),
     ("Sources", "server", Screen::Sources),
     ("Réglages", "sliders", Screen::Settings),
 ];
@@ -211,6 +210,10 @@ pub struct Onde {
     naming: Option<String>,
     /// The delete button has been pressed once.
     deleting: bool,
+    /// When set, the playlist view shows all library tracks for bulk adding.
+    browse_for_playlist: Option<usize>,
+    /// Search query inside the browse modal.
+    browse_query: String,
     presence: Option<Presence>,
     cover_links: Arc<Links>,
     host_covers: bool,
@@ -304,6 +307,8 @@ impl Onde {
             adding_to: None,
             naming: None,
             deleting: false,
+            browse_for_playlist: None,
+            browse_query: String::new(),
             presence: None,
             cover_links: Arc::new(Links::load()),
             host_covers: settings.host_covers,
@@ -349,6 +354,8 @@ impl Onde {
         self.adding_to = None;
         self.naming = None;
         self.deleting = false;
+        self.browse_for_playlist = None;
+        self.browse_query.clear();
         cx.notify();
     }
 
@@ -372,6 +379,21 @@ impl Onde {
         self.play(index, cx);
     }
 
+    fn delete_track(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(track) = self.queue.tracks.get(index) {
+            if let crate::library::Location::File(path) = &track.location {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        let mut tracks = self.queue.tracks.clone();
+        if index < tracks.len() {
+            tracks.remove(index);
+        }
+        self.queue.refresh(tracks);
+        self.catalog_changed();
+        cx.notify();
+    }
+
     fn enqueue_tracks(&mut self, tracks: Vec<usize>, cx: &mut Context<Self>) {
         if tracks.is_empty() {
             return;
@@ -384,9 +406,7 @@ impl Onde {
     fn tick(&mut self, cx: &mut Context<Self>) -> Duration {
         self.poll_telegram(cx);
         self.poll_live_search(cx);
-        if self.screen == Screen::Downloads && self.downloads.needs_updates() {
-            cx.notify();
-        }
+        self.tick_search_downloads();
         if self.screen == Screen::Search
             && (self.downloads.telegram.is_some()
                 || self.search.last_typed.is_some()
@@ -600,6 +620,9 @@ impl Onde {
         self.message = None;
         self.remember_album();
         self.load_lyrics(cx);
+        if config::load().theme.as_deref() == Some("Pochette") {
+            self.apply_cover_theme(cx);
+        }
         cx.notify();
     }
 
@@ -769,18 +792,21 @@ impl Onde {
             .min_w_0()
             .overflow_hidden();
         if !compact {
-            for (index, (label, _, target)) in NAVIGATION.into_iter().enumerate() {
+            for (index, (label, icon_name, target)) in NAVIGATION.into_iter().enumerate() {
                 let on = self.nav_active(&target);
+                let tint = if on { palette.spark } else { palette.tx2 };
                 nav = nav.child(
                     div()
                         .id(("nav", index))
                         .h(px(36.))
                         .flex()
                         .items_center()
+                        .gap(px(6.))
                         .px_3()
                         .rounded(px(10.))
                         .cursor_pointer()
                         .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(13.))
                         .when(on, |item| {
                             item.bg(palette.rise2).shadow(vec![BoxShadow {
                                 color: alpha(palette.tide, 0.6).into(),
@@ -791,44 +817,11 @@ impl Onde {
                         })
                         .when(!on, |item| item.hover(|item| item.bg(pal().rise)))
                         .on_click(cx.listener(move |this, _, _, cx| this.go(target.clone(), cx)))
+                        .child(icon(icon_name, 16., tint))
                         .child(label),
                 );
             }
         }
-        let on_search = self.screen == Screen::Search;
-        let search_query = self.search.query.clone();
-        let search_bar = div()
-            .id("top-search")
-            .w(px(260.))
-            .flex_none()
-            .h(px(36.))
-            .flex()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .rounded(px(10.))
-            .bg(palette.rise)
-            .border_1()
-            .border_color(if on_search { palette.tide } else { palette.line })
-            .cursor_text()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.go(Screen::Search, cx);
-            }))
-            .child(icon("search", 16., palette.tx2))
-            .child(if search_query.is_empty() && !on_search {
-                div()
-                    .text_size(px(13.))
-                    .text_color(palette.tx3)
-                    .child("Rechercher une musique…")
-            } else {
-                div().text_size(px(13.)).truncate().child(if on_search {
-                    format!("{search_query}▏")
-                } else if search_query.is_empty() {
-                    "Rechercher une musique…".to_owned()
-                } else {
-                    search_query
-                })
-            });
         div()
             .h(px(56.))
             .flex_none()
@@ -836,6 +829,8 @@ impl Onde {
             .items_center()
             .gap_6()
             .px_6()
+            .border_b_1()
+            .border_color(palette.line)
             .when_some(back, |top, back| {
                 top.child(
                     icon_button("back", "back", false)
@@ -851,7 +846,6 @@ impl Onde {
                     .child(display("onde", 22.)),
             )
             .child(nav)
-            .when(!compact, |top| top.child(search_bar))
     }
 
     fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -884,13 +878,14 @@ impl Onde {
 impl Render for Onde {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = pal();
+        let browse_modal_open = self.browse_for_playlist.is_some();
         let typing = self.naming.is_some()
+            || browse_modal_open
             || (!self.fullscreen
                 && !self.ask_folder
                 && !self.quality_open
                 && self.adding_to.is_none()
-                && (self.screen == Screen::Downloads
-                    || self.screen == Screen::Search
+                && (self.screen == Screen::Search
                     || self.library_typing));
         let compact = window.viewport_size().width < px(COMPACT_WIDTH);
         let root = div()
@@ -965,7 +960,7 @@ impl Render for Onde {
                         self.render_collection(Some(*index), window, cx)
                     }
                     Screen::Search => self.render_search(window, cx).into_any_element(),
-                    Screen::Downloads => self.render_downloads(window, cx).into_any_element(),
+                    Screen::Downloads => self.render_search(window, cx).into_any_element(),
                     Screen::Sources => self.render_sources(cx).into_any_element(),
                     Screen::Settings => self.render_settings(cx).into_any_element(),
                 }
@@ -1005,6 +1000,9 @@ impl Render for Onde {
         })
         .when(self.adding_to.is_some(), |root| {
             root.child(self.render_add_menu(cx))
+        })
+        .when(self.browse_for_playlist.is_some(), |root| {
+            root.child(self.render_browse_modal(cx))
         })
     }
 }

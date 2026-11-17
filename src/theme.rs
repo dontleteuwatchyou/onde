@@ -119,6 +119,55 @@ impl Palette {
             .unwrap_or(&THEMES[0]);
         Self::new(theme)
     }
+
+    pub fn from_accent(accent: Rgba) -> Self {
+        let lum = luminance(accent);
+        let ink = if lum > 0.15 {
+            mix(accent, color(0x000000), 0.85)
+        } else {
+            mix(accent, color(0x000000), 0.7)
+        };
+        let tide = if lum > 0.3 {
+            mix(accent, color(0x000000), 0.3)
+        } else {
+            mix(accent, color(0xFFFFFF), 0.2)
+        };
+        let spark = if lum > 0.5 {
+            accent
+        } else {
+            mix(accent, color(0xFFFFFF), 0.4)
+        };
+        let tx = if luminance(ink) > 0.4 {
+            color(0x1A1A2E)
+        } else {
+            color(0xF0ECE0)
+        };
+        let black = color(0);
+        let light = luminance(ink) > 0.4;
+        let mut ramp = [ink; 8];
+        for (index, slot) in ramp.iter_mut().enumerate() {
+            let u = index as f32 / 7.0;
+            *slot = if u < 0.5 {
+                mix(tide, tx, u * 2.0)
+            } else {
+                mix(tx, spark, (u - 0.5) * 2.0)
+            };
+        }
+        Self {
+            name: "Pochette",
+            ink,
+            deep: mix(ink, black, if light { 0.1 } else { 0.45 }),
+            rise: mix(ink, tx, 0.07),
+            rise2: mix(ink, tx, 0.15),
+            line: alpha(tx, 0.16),
+            tide,
+            spark,
+            tx,
+            tx2: mix(tx, ink, 0.22),
+            tx3: mix(tx, ink, 0.36),
+            ramp,
+        }
+    }
 }
 
 #[cfg(test)]

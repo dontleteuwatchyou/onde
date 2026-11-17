@@ -87,6 +87,15 @@ impl Onde {
         cx.notify();
     }
 
+    fn add_track_to_playlist(&mut self, playlist: usize, track_index: usize, cx: &mut Context<Self>) {
+        let Some(track) = self.queue.tracks.get(track_index) else {
+            return;
+        };
+        self.collections.add(playlist, &track_id(track));
+        self.save_collections();
+        cx.notify();
+    }
+
     fn remove_from_playlist(&mut self, playlist: usize, index: usize, cx: &mut Context<Self>) {
         let Some(track) = self.queue.tracks.get(index) else {
             return;
@@ -267,7 +276,8 @@ impl Onde {
                 None => return self.library_notice(),
             },
         };
-        let tracks = Rc::new(self.resolve(&ids));
+        let resolved_tracks = self.resolve(&ids);
+        let tracks = Rc::new(resolved_tracks.clone());
         let missing = ids.len() - tracks.len();
         let seconds: f64 = tracks
             .iter()
@@ -341,6 +351,19 @@ impl Onde {
                             })
                             .when_some(playlist, |row, index| {
                                 row.child(
+                                    ghost("playlist-add-tracks", "Ajouter des morceaux")
+                                        .on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                this.browse_for_playlist = if this.browse_for_playlist == Some(index) {
+                                                    None
+                                                } else {
+                                                    Some(index)
+                                                };
+                                                cx.notify();
+                                            },
+                                        )),
+                                )
+                                .child(
                                     ghost(
                                         "playlist-delete",
                                         if deleting {
@@ -402,7 +425,31 @@ impl Onde {
             .w_full()
             .into_any_element()
         };
-        div()
+        // Suggestions: pick tracks from library that share artist with playlist
+        let suggestions = if playlist.is_some() && !resolved_tracks.is_empty() {
+            let playlist_ids: std::collections::HashSet<String> = ids.iter().cloned().collect();
+            let playlist_artists: std::collections::HashSet<String> = resolved_tracks
+                .iter()
+                .filter_map(|&i| self.queue.tracks.get(i))
+                .map(|t| t.artist.to_lowercase())
+                .collect();
+            let mut suggested: Vec<usize> = (0..self.queue.tracks.len())
+                .filter(|&i| {
+                    let id = track_id(&self.queue.tracks[i]);
+                    !playlist_ids.contains(&id)
+                        && playlist_artists.contains(&self.queue.tracks[i].artist.to_lowercase())
+                })
+                .collect();
+            suggested.truncate(20);
+            suggested
+        } else {
+            Vec::new()
+        };
+        let has_suggestions = !suggestions.is_empty();
+        let suggestion_count = suggestions.len();
+        let suggestions = Rc::new(suggestions);
+        let suggestion_list = suggestions.clone();
+        let mut page = div()
             .flex_1()
             .min_h_0()
             .flex()
@@ -415,10 +462,225 @@ impl Onde {
                     .flex()
                     .flex_col()
                     .px_8()
-                    .pb(px(40.))
                     .child(body),
+            );
+        if has_suggestions {
+            let pl = playlist.unwrap();
+            page = page
+                .child(
+                    div()
+                        .px_8()
+                        .pt_2()
+                        .pb_1()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .border_t_1()
+                        .border_color(palette.line)
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_size(px(14.))
+                                .child("Suggestions"),
+                        )
+                        .child(
+                            mono(format!("{suggestion_count} du même artiste"))
+                                .text_color(palette.tx3),
+                        ),
+                )
+                .child(
+                    uniform_list(
+                        "suggestions",
+                        suggestion_count,
+                        cx.processor(move |this, range: Range<usize>, window, cx| {
+                            let wide = this.content_width(window) > WIDE_LIST;
+                            range
+                                .map(|row| {
+                                    let index = suggestion_list[row];
+                                    this.track_row(index, None, None, wide, cx)
+                                        .child(
+                                            btn(("suggest-add", index), "+")
+                                                .on_click(cx.listener(
+                                                    move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.add_track_to_playlist(pl, index, cx);
+                                                    },
+                                                )),
+                                        )
+                                })
+                                .collect()
+                        }),
+                    )
+                    .h(px(220.))
+                    .px_8()
+                    .w_full(),
+                );
+        }
+        page.into_any_element()
+    }
+
+    /// Browse the full library as a modal, to add tracks to a playlist.
+    pub(super) fn render_browse_modal(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = pal();
+        let playlist_index = self.browse_for_playlist.unwrap();
+        let playlist_name = self
+            .collections
+            .playlists
+            .get(playlist_index)
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        let playlist_ids: std::collections::HashSet<String> = self
+            .collections
+            .playlists
+            .get(playlist_index)
+            .map(|p| p.tracks.iter().cloned().collect())
+            .unwrap_or_default();
+        let query = self.browse_query.to_lowercase();
+        let all_tracks: Vec<usize> = (0..self.queue.tracks.len())
+            .filter(|&i| {
+                let track = &self.queue.tracks[i];
+                !playlist_ids.contains(&track_id(track))
+                    && (query.is_empty()
+                        || track.title.to_lowercase().contains(&query)
+                        || track.artist.to_lowercase().contains(&query)
+                        || track.album.to_lowercase().contains(&query))
+            })
+            .collect();
+        let total = all_tracks.len();
+        let all_tracks = Rc::new(all_tracks);
+        let browse_list = all_tracks.clone();
+        let search_field = {
+            let q = self.browse_query.clone();
+            div()
+                .h(px(40.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .rounded(px(10.))
+                .bg(palette.ink)
+                .border_1()
+                .border_color(palette.tide)
+                .child(icon("search", 16., palette.tx2))
+                .child(if q.is_empty() {
+                    div()
+                        .text_size(px(13.))
+                        .text_color(palette.tx3)
+                        .child("Chercher un morceau…")
+                } else {
+                    div()
+                        .text_size(px(13.))
+                        .truncate()
+                        .child(format!("{q}▏"))
+                })
+        };
+        div()
+            .id("browse-modal")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::Rgba {
+                a: 0.6,
+                ..palette.deep
+            })
+            .occlude()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.browse_for_playlist = None;
+                this.browse_query.clear();
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("browse-modal-card")
+                    .w(px(580.))
+                    .h(px(560.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_5()
+                    .rounded(px(20.))
+                    .bg(palette.rise)
+                    .border_1()
+                    .border_color(palette.line)
+                    .shadow(vec![gpui::BoxShadow {
+                        color: crate::theme::alpha(palette.deep, 0.8).into(),
+                        offset: point(px(0.), px(8.)),
+                        blur_radius: px(40.),
+                        spread_radius: px(0.),
+                    }])
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(h2(format!("Ajouter à {playlist_name}")))
+                            .child(
+                                icon_small("close-browse", "close").on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.browse_for_playlist = None;
+                                        this.browse_query.clear();
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(search_field)
+                    .child(
+                        mono(format!("{} disponible{}", total, if total > 1 { "s" } else { "" }))
+                            .text_color(palette.tx3),
+                    )
+                    .child(if total == 0 {
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(palette.tx2)
+                            .child(if self.browse_query.is_empty() {
+                                "Tous les morceaux sont déjà dans cette playlist."
+                            } else {
+                                "Aucun résultat."
+                            })
+                            .into_any_element()
+                    } else {
+                        uniform_list(
+                            "browse-for-playlist",
+                            total,
+                            cx.processor(move |this, range: Range<usize>, window, cx| {
+                                let wide = this.content_width(window) > WIDE_LIST;
+                                range
+                                    .map(|row| {
+                                        let index = browse_list[row];
+                                        this.track_row(index, None, None, wide, cx)
+                                            .child(
+                                                btn(("playlist-add", index), "+")
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            cx.stop_propagation();
+                                                            this.add_track_to_playlist(
+                                                                playlist_index,
+                                                                index,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                    })
+                                    .collect()
+                            }),
+                        )
+                        .flex_1()
+                        .w_full()
+                        .into_any_element()
+                    }),
             )
-            .into_any_element()
     }
 
     /// "Add to a playlist", over everything else.
