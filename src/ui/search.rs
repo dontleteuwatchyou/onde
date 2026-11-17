@@ -53,6 +53,8 @@ pub(super) struct SearchScreen {
     covers: HashMap<String, Option<Arc<RenderImage>>>,
     covers_loading: usize,
     pub(super) active_downloads: Vec<SearchDownload>,
+    /// Number of buttons last seen from bridge — used to detect new inline results.
+    last_button_count: usize,
 }
 
 impl SearchScreen {
@@ -68,6 +70,7 @@ impl SearchScreen {
             covers: HashMap::new(),
             covers_loading: 0,
             active_downloads: Vec::new(),
+            last_button_count: 0,
         }
     }
 
@@ -385,16 +388,37 @@ impl Onde {
         let palette = pal();
         let narrow = window.viewport_size().width < px(COMPACT_WIDTH);
 
-        // Update telegram-sent downloads: check if files arrived
-        if let Some(bridge) = &self.downloads.telegram {
-            let file_count = bridge.state.lock().unwrap().files.len();
+        // Auto-click the first inline result when buttons arrive for a pending download.
+        let (buttons, file_count) = self
+            .downloads
+            .telegram
+            .as_ref()
+            .map(|b| {
+                let st = b.state.lock().unwrap();
+                (st.buttons.clone(), st.files.len())
+            })
+            .unwrap_or_default();
+
+        let has_pending = self
+            .search
+            .active_downloads
+            .iter()
+            .any(|dl| matches!(dl.state, DownloadState::SentToTelegram));
+
+        if has_pending && !buttons.is_empty() && buttons.len() != self.search.last_button_count {
+            self.search.last_button_count = buttons.len();
+            if let Some(first) = buttons.first() {
+                if let Some(bridge) = &mut self.downloads.telegram {
+                    let _ = bridge.send(json!({"action": "click", "key": first.key}));
+                }
+            }
+        }
+
+        // Mark downloads as Done when new files arrive
+        if file_count > 0 {
             for dl in &mut self.search.active_downloads {
                 if matches!(dl.state, DownloadState::SentToTelegram) {
-                    // Mark as done when telegram has received new files
-                    // (simplified: we can't perfectly match file to request)
-                    if file_count > 0 {
-                        // Keep as SentToTelegram - user sees "Envoyé"
-                    }
+                    dl.state = DownloadState::Done;
                 }
             }
         }
