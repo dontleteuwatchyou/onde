@@ -9,6 +9,7 @@ mod quality;
 mod search;
 mod settings;
 mod setup;
+mod suggestions;
 mod updates;
 mod widgets;
 
@@ -225,6 +226,7 @@ pub struct Onde {
     last_audio: Instant,
     downloads: downloads::Downloads,
     search: search::SearchScreen,
+    suggestions: suggestions::Suggestions,
     /// First launch, before a music folder was chosen.
     ask_folder: bool,
     /// Onboarding step (0 = folder, 1 = telegram, 2 = covers/discord).
@@ -321,6 +323,7 @@ impl Onde {
             last_audio: Instant::now(),
             downloads: downloads::Downloads::new(),
             search: search::SearchScreen::new(),
+            suggestions: suggestions::Suggestions::default(),
             ask_folder: false,
             setup_step: 0,
             covers: HashMap::new(),
@@ -359,6 +362,9 @@ impl Onde {
         self.deleting = false;
         self.browse_for_playlist = None;
         self.browse_query.clear();
+        if let Screen::Playlist(index) = self.screen {
+            self.load_suggestions(index, cx);
+        }
         cx.notify();
     }
 
@@ -410,6 +416,7 @@ impl Onde {
         self.poll_telegram(cx);
         self.poll_live_search(cx);
         self.tick_search_downloads();
+        self.apply_pending_playlist_adds(cx);
         if self.screen == Screen::Search
             && (self.downloads.telegram.is_some()
                 || self.search.last_typed.is_some()

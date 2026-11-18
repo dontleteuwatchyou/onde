@@ -425,30 +425,6 @@ impl Onde {
             .w_full()
             .into_any_element()
         };
-        // Suggestions: pick tracks from library that share artist with playlist
-        let suggestions = if playlist.is_some() && !resolved_tracks.is_empty() {
-            let playlist_ids: std::collections::HashSet<String> = ids.iter().cloned().collect();
-            let playlist_artists: std::collections::HashSet<String> = resolved_tracks
-                .iter()
-                .filter_map(|&i| self.queue.tracks.get(i))
-                .map(|t| t.artist.to_lowercase())
-                .collect();
-            let mut suggested: Vec<usize> = (0..self.queue.tracks.len())
-                .filter(|&i| {
-                    let id = track_id(&self.queue.tracks[i]);
-                    !playlist_ids.contains(&id)
-                        && playlist_artists.contains(&self.queue.tracks[i].artist.to_lowercase())
-                })
-                .collect();
-            suggested.truncate(20);
-            suggested
-        } else {
-            Vec::new()
-        };
-        let has_suggestions = !suggestions.is_empty();
-        let suggestion_count = suggestions.len();
-        let suggestions = Rc::new(suggestions);
-        let suggestion_list = suggestions.clone();
         let mut page = div()
             .flex_1()
             .min_h_0()
@@ -464,57 +440,9 @@ impl Onde {
                     .px_8()
                     .child(body),
             );
-        if has_suggestions {
-            let pl = playlist.unwrap();
-            page = page
-                .child(
-                    div()
-                        .px_8()
-                        .pt_2()
-                        .pb_1()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .border_t_1()
-                        .border_color(palette.line)
-                        .child(
-                            div()
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_size(px(14.))
-                                .child("Suggestions"),
-                        )
-                        .child(
-                            mono(format!("{suggestion_count} du même artiste"))
-                                .text_color(palette.tx3),
-                        ),
-                )
-                .child(
-                    uniform_list(
-                        "suggestions",
-                        suggestion_count,
-                        cx.processor(move |this, range: Range<usize>, window, cx| {
-                            let wide = this.content_width(window) > WIDE_LIST;
-                            range
-                                .map(|row| {
-                                    let index = suggestion_list[row];
-                                    this.track_row(index, None, None, wide, cx)
-                                        .child(
-                                            btn(("suggest-add", index), "+")
-                                                .on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        cx.stop_propagation();
-                                                        this.add_track_to_playlist(pl, index, cx);
-                                                    },
-                                                )),
-                                        )
-                                })
-                                .collect()
-                        }),
-                    )
-                    .h(px(220.))
-                    .px_8()
-                    .w_full(),
-                );
+        // Spotify-style suggestions from Deezer, pulled when the playlist opens.
+        if let Some(section) = playlist.and_then(|pl| self.suggestions_section(pl, cx)) {
+            page = page.child(section);
         }
         page.into_any_element()
     }

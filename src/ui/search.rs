@@ -46,6 +46,8 @@ pub(super) struct SearchDownload {
     pub state: DownloadState,
     /// File count at the moment this download was sent — used to detect new arrivals.
     files_at_send: usize,
+    /// When set, the finished track is dropped into this playlist (suggestions).
+    pub add_to_playlist: Option<usize>,
 }
 
 pub(super) struct SearchScreen {
@@ -126,7 +128,7 @@ fn deezer_search(query: &str) -> anyhow::Result<Vec<MusicInfo>> {
         .collect())
 }
 
-fn fetch_cover_image(url: &str) -> Option<Arc<RenderImage>> {
+pub(super) fn fetch_cover_image(url: &str) -> Option<Arc<RenderImage>> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(DEEZER_TIMEOUT))
@@ -226,6 +228,17 @@ impl Onde {
         let Some(info) = self.search.results.get(index).cloned() else {
             return;
         };
+        self.start_download(info, None, cx);
+    }
+
+    /// Download a track (Telegram first, then yt-dlp). With `add_to_playlist`,
+    /// the finished file is dropped into that playlist once it lands.
+    pub(super) fn start_download(
+        &mut self,
+        info: MusicInfo,
+        add_to_playlist: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         let plain_query = if info.artist.is_empty() {
             info.title.clone()
         } else {
@@ -276,6 +289,7 @@ impl Onde {
                             info,
                             state: DownloadState::Failed(format!("{error:#}").into()),
                             files_at_send: 0,
+                            add_to_playlist,
                         });
                         cx.notify();
                         return;
@@ -296,6 +310,7 @@ impl Onde {
                         folder,
                     },
                     files_at_send: 0,
+                    add_to_playlist,
                 });
                 cx.notify();
                 return;
@@ -306,6 +321,7 @@ impl Onde {
                     info,
                     state: DownloadState::Failed("Choisir le dossier musical d'abord.".into()),
                     files_at_send: 0,
+                    add_to_playlist,
                 });
                 cx.notify();
                 return;
@@ -326,6 +342,7 @@ impl Onde {
                         info,
                         state: DownloadState::SentToTelegram,
                         files_at_send: current_files,
+                        add_to_playlist,
                         });
                 }
                 Err(error) => {
@@ -333,6 +350,7 @@ impl Onde {
                         info,
                         state: DownloadState::Failed(error.to_string().into()),
                         files_at_send: 0,
+                        add_to_playlist,
                         });
                 }
             }
@@ -342,6 +360,7 @@ impl Onde {
                 info: info.clone(),
                 state: DownloadState::Searching,
                 files_at_send: 0,
+                add_to_playlist,
             });
             let dl_index = self.search.active_downloads.len() - 1;
             let sources = crate::download::sources();
