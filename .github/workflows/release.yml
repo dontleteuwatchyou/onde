@@ -70,10 +70,34 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
+      # Onde's updater refuses any binary without a valid signature (prehashed,
+      # with a trusted comment "onde <version> <asset>"). Without this step every
+      # release looks like "no update" to installed copies. Mirrors the local
+      # scripts/release.sh: rsign with the passwordless project key (-W).
+      - name: Sign binaries
+        env:
+          ONDE_SIGNING_KEY: ${{ secrets.ONDE_SIGNING_KEY }}
+        run: |
+          if [ -z "$ONDE_SIGNING_KEY" ]; then
+            echo "::error::Secret ONDE_SIGNING_KEY manquant : release non signée, l'auto-update la refusera." >&2
+            exit 1
+          fi
+          cargo install rsign2 --quiet
+          printf '%s\n' "$ONDE_SIGNING_KEY" > onde.key
+          version="${GITHUB_REF_NAME#v}"
+          for asset in onde-linux-x86_64 onde-windows-x86_64.exe; do
+            rsign sign -W -s onde.key -x "artifacts/$asset.minisig" \
+              -t "onde $version $asset" "artifacts/$asset"
+            rsign verify -p assets/update.pub -x "artifacts/$asset.minisig" "artifacts/$asset"
+          done
+          rm -f onde.key
 
       - name: Create release
         uses: softprops/action-gh-release@v2
